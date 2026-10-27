@@ -291,36 +291,45 @@ export function hasThreeSets(hand: TileId[], melds: Mentsu[]): boolean {
 }
 
 /**
+ * 指定した捨て牌1枚を切ったあとの「待ち牌（あと1枚で3セットが完成する牌種）」一覧を返す。
+ */
+export function getRiichiWaits(hand: TileId[], discardTile: TileId, melds: Mentsu[]): Kind[] {
+  const need = 3 - melds.length;
+  if (need <= 0) return [];
+  const idx = hand.indexOf(discardTile);
+  if (idx < 0) return [];
+
+  const counts = new Array<number>(KIND_COUNT).fill(0);
+  for (let i = 0; i < hand.length; i++) {
+    if (i !== idx) counts[kindOf(hand[i])]++;
+  }
+
+  const waits: Kind[] = [];
+  for (let k = 0; k < KIND_COUNT; k++) {
+    counts[k]++;
+    if (canMakeSets(counts, need)) {
+      waits.push(k);
+    }
+    counts[k]--;
+  }
+  return waits;
+}
+
+/**
  * 手牌から1枚捨てたときに「あと1枚で3セットが揃う状態（聴牌）」になる捨て牌候補一覧を返す。
  */
 export function findRiichiDiscards(hand: TileId[], melds: Mentsu[]): TileId[] {
   const need = 3 - melds.length;
   if (need <= 0) return [];
-  const counts = new Array<number>(KIND_COUNT).fill(0);
-  for (const t of hand) counts[kindOf(t)]++;
+  if (hand.length < need * 3) return [];
 
-  // 手牌がちょうど need*3 枚（通常9枚）ある場合：1枚除いて残り (need*3 - 1) 枚が聴牌か調べる
-  if (hand.length >= need * 3) {
-    const validDiscards: TileId[] = [];
-    for (const t of hand) {
-      const tk = kindOf(t);
-      counts[tk]--;
-      let tenpai = false;
-      for (let k = 0; k < KIND_COUNT; k++) {
-        counts[k]++;
-        if (canMakeSets(counts, need)) {
-          tenpai = true;
-        }
-        counts[k]--;
-        if (tenpai) break;
-      }
-      counts[tk]++;
-      if (tenpai) validDiscards.push(t);
+  const validDiscards: TileId[] = [];
+  for (const t of hand) {
+    if (getRiichiWaits(hand, t, melds).length > 0) {
+      validDiscards.push(t);
     }
-    return validDiscards;
   }
-
-  return [];
+  return validDiscards;
 }
 
 /**

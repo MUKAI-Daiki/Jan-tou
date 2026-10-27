@@ -4,12 +4,13 @@ import {
   canDeclareRiichi,
   canMulliganHand,
   findRiichiDiscards,
+  getRiichiWaits,
   hasThreeSets,
   kanCandidates,
 } from './core/mentsu';
 import { randomSeed } from './core/rng';
 import { evaluateSelection } from './core/score';
-import { kindOf } from './core/tile';
+import { kindName, kindOf } from './core/tile';
 import { MONSTERS, MonsterDef } from './data/monsters';
 import { Preview, UiState, renderBattle, renderTitle } from './ui/render';
 
@@ -20,6 +21,7 @@ let state: BattleState | null = null;
 let pendingEvents: BattleState['events'] = [];
 let autoRiichiTimer: number | null = null;
 let typewriterTimer: number | null = null;
+let phaseResetTimer: number | null = null;
 let logQueue: LogEntry[] = [];
 
 const ui: UiState = {
@@ -27,6 +29,8 @@ const ui: UiState = {
   selectedMelds: new Set(),
   selectionOrder: [],
   searchMode: false,
+  riichiSelectMode: false,
+  combatPhase: 'idle',
   logOpen: false,
   liveLogText: '',
   liveLogSide: 'system',
@@ -45,6 +49,18 @@ function stopTypewriter() {
     window.clearTimeout(typewriterTimer);
     typewriterTimer = null;
   }
+  if (phaseResetTimer !== null) {
+    window.clearTimeout(phaseResetTimer);
+    phaseResetTimer = null;
+  }
+}
+
+function syncCombatPhaseDom() {
+  const battleEl = document.querySelector<HTMLElement>('main.battle');
+  if (!battleEl) return;
+  battleEl.classList.remove('phase-player', 'phase-monster');
+  if (ui.combatPhase === 'player') battleEl.classList.add('phase-player');
+  if (ui.combatPhase === 'monster') battleEl.classList.add('phase-monster');
 }
 
 function enqueueLogs(entries: LogEntry[]) {
@@ -59,6 +75,12 @@ function playNextLogInQueue() {
   const entry = logQueue.shift()!;
   ui.liveLogSide = entry.side;
   ui.liveLogText = '';
+  if (entry.side === 'player') {
+    ui.combatPhase = 'player';
+  } else if (entry.side === 'monster') {
+    ui.combatPhase = 'monster';
+  }
+  syncCombatPhaseDom();
 
   const chars = [...entry.text];
   let idx = 0;
@@ -86,6 +108,11 @@ function playNextLogInQueue() {
       typewriterTimer = window.setTimeout(playNextLogInQueue, 340);
     } else {
       typewriterTimer = null;
+      phaseResetTimer = window.setTimeout(() => {
+        phaseResetTimer = null;
+        ui.combatPhase = 'idle';
+        syncCombatPhaseDom();
+      }, 650);
     }
   };
   tick();
@@ -96,6 +123,7 @@ function clearSelection() {
   ui.selectedMelds.clear();
   ui.selectionOrder = [];
   ui.searchMode = false;
+  ui.riichiSelectMode = false;
 }
 
 function selectAllPlayableTiles(s: BattleState) {
@@ -126,9 +154,9 @@ function checkAndScheduleAutoRiichi() {
     return;
   }
 
-  // まだ3セットが揃っていない場合はオートで自摸切りを進める
+  // まだ3セットが揃っていない場合：
+  // 1段階目：右端の自摸牌を確認できるよう少し待ってから選択状態（浮き上がり）にする
   autoRiichiTimer = window.setTimeout(() => {
-    autoRiichiTimer = null;
     if (!state || state.status !== 'playing' || !state.riichi) return;
     if (hasThreeSets(state.hand, state.melds)) return;
 
@@ -139,10 +167,22 @@ function checkAndScheduleAutoRiichi() {
         ? drawnTile
         : discards[0] ?? state.hand[state.hand.length - 1];
 
-    if (targetTile !== undefined) {
+    if (targetTile === undefined) return;
+
+    // 切る自摸牌を浮き上がらせて視覚的に追えるようにする
+    ui.selected.clear();
+    ui.selected.add(targetTile);
+    ui.selectionOrder = [targetTile];
+    render();
+
+    // 2段階目：浮き上がった自摸牌を切る
+    autoRiichiTimer = window.setTimeout(() => {
+      autoRiichiTimer = null;
+      if (!state || state.status !== 'playing' || !state.riichi) return;
+      if (hasThreeSets(state.hand, state.melds)) return;
       dispatch({ type: 'attack', tiles: [targetTile], melds: [] });
-    }
-  }, 950);
+    }, 480);
+  }, 650);
 }
 
 function computePreview(s: BattleState): Preview {
@@ -155,6 +195,7 @@ function computePreview(s: BattleState): Preview {
   const selectedKinds = new Set(tiles.map(kindOf));
   const canKan =
     !s.riichi &&
+    !ui.riichiSelectMode &&
     meldIdx.length === 0 &&
     ((selectedKinds.size === 1 && kCands.includes([...selectedKinds][0])) ||
       (tiles.length === 0 && kCands.length > 0));
@@ -164,10 +205,41 @@ function computePreview(s: BattleState): Preview {
     canAttack: false,
     canKan,
     canRiichi,
+    canConfirmRiichi: false,
     canMulligan,
   };
 
   if (s.status !== 'playing') return none;
+
+  if (ui.riichiSelectMode) {
+    const validDiscards = findRiichiDiscards(s.hand, s.melds);
+    if (tiles.length === 1 && validDiscards.includes(tiles[0])) {
+      const discardTile = tiles[0];
+      const waits = getRiichiWaits(s.hand, discardTile, s.melds);
+      const waitStr =
+        waits.length > 0
+          ? waits
+              .map((k) => {
+                const rem = s.wall.filter((t) => kindOf(t) === k).length;
+                return `${kindName(k)}(残${rem}枚)`;
+              })
+              .join('・')
+          : 'なし';
+      return {
+        ...none,
+        canConfirmRiichi: true,
+        text: `🔥【リーチ捨て牌：${kindName(kindOf(discardTile))}】 → 待ち牌：${waitStr}`,
+        subText: '「この牌を切ってリーチ確定！」を押すと、選択した牌を捨ててオート自摸切りを開始します',
+      };
+    }
+    return {
+      ...none,
+      canConfirmRiichi: false,
+      text: '🔥 リーチ宣言モード：光っている牌の中から、最初に捨てる牌を1枚クリックして選んでください',
+      subText: '捨てる牌によって待ち牌（3セット完成に必要な牌）が変わります',
+    };
+  }
+
   if (tiles.length === 0 && meldIdx.length === 0) {
     if (s.riichi) {
       const completed = hasThreeSets(s.hand, s.melds);
@@ -175,12 +247,20 @@ function computePreview(s: BattleState): Preview {
         ...none,
         text: completed
           ? '🎉【リーチ完成】3セットが揃いました！全選択して「攻撃」で威力2倍＆チェーン発動！'
-          : '🔄【リーチ中】3セットが揃うまで自動で自摸切りを進めています…（「リーチキャンセル」で中断可）',
+          : '🔄【リーチ中】右端の自摸牌を自動でツモ切りしています…（「リーチキャンセル」で中断可）',
       };
     }
     return {
       ...none,
       text: '任意の枚数の牌を選んで「攻撃」してください（セット・役が含まれるとボーナス＆チェーン発生！）',
+    };
+  }
+
+  if (s.riichi && !hasThreeSets(s.hand, s.melds)) {
+    const t = tiles[0];
+    return {
+      ...none,
+      text: `🔄【リーチ自摸切り】自摸牌「${t !== undefined ? kindName(kindOf(t)) : ''}」を切って次の牌をツモります…`,
     };
   }
 
@@ -236,6 +316,7 @@ function computePreview(s: BattleState): Preview {
     canAttack: true,
     canKan,
     canRiichi,
+    canConfirmRiichi: false,
     canMulligan,
     ev,
   };
@@ -291,6 +372,7 @@ function startBattle(def: MonsterDef) {
   state = newBattle(def, randomSeed());
   screen = 'battle';
   clearSelection();
+  ui.combatPhase = 'idle';
   ui.message = '';
   ui.logOpen = false;
   render();
@@ -351,6 +433,19 @@ app.addEventListener('click', (e) => {
   if (el.dataset.tile !== undefined) {
     if (state.status !== 'playing') return;
     const t = Number(el.dataset.tile);
+
+    // リーチ宣言モード中は、有効な捨て牌候補のみ単一選択で切り替え可能にする
+    if (ui.riichiSelectMode) {
+      const validDiscards = findRiichiDiscards(state.hand, state.melds);
+      if (!validDiscards.includes(t)) return;
+      ui.selected.clear();
+      ui.selected.add(t);
+      ui.selectionOrder = [t];
+      ui.message = '';
+      render();
+      return;
+    }
+
     if (ui.selected.has(t)) {
       ui.selected.delete(t);
       ui.selectionOrder = ui.selectionOrder.filter((id) => id !== t);
@@ -365,7 +460,7 @@ app.addEventListener('click', (e) => {
   }
 
   if (el.dataset.meld !== undefined) {
-    if (state.status !== 'playing') return;
+    if (state.status !== 'playing' || ui.riichiSelectMode) return;
     const i = Number(el.dataset.meld);
     if (ui.selectedMelds.has(i)) ui.selectedMelds.delete(i);
     else ui.selectedMelds.add(i);
@@ -385,9 +480,33 @@ app.addEventListener('click', (e) => {
       if (kind !== undefined) dispatch({ type: 'kan', kind });
       break;
     }
-    case 'riichi': {
+    case 'start-riichi-select': {
+      const validDiscards = findRiichiDiscards(state.hand, state.melds);
+      const currentSelected = [...ui.selected];
+      ui.selectedMelds.clear();
+      ui.searchMode = false;
+      ui.riichiSelectMode = true;
+      // 既に有効な捨て牌候補を1枚だけ選択していた場合はそのまま保持し、そうでなければクリアして手動選択させる
+      if (currentSelected.length === 1 && validDiscards.includes(currentSelected[0])) {
+        ui.selected = new Set([currentSelected[0]]);
+        ui.selectionOrder = [currentSelected[0]];
+      } else {
+        ui.selected.clear();
+        ui.selectionOrder = [];
+      }
+      ui.message = '';
+      render();
+      break;
+    }
+    case 'confirm-riichi': {
       const [firstSelected] = [...ui.selected];
       dispatch({ type: 'riichi', discardTile: firstSelected });
+      break;
+    }
+    case 'cancel-riichi-select': {
+      clearSelection();
+      ui.message = '';
+      render();
       break;
     }
     case 'cancel-riichi':

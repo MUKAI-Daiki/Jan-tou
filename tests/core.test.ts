@@ -1,9 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { BattleState, HAND_SIZE, newBattle, step } from '../src/core/battle';
-import { canDeclareRiichi, canMulliganHand, decompose, decomposeSelection, Mentsu } from '../src/core/mentsu';
+import {
+  canDeclareRiichi,
+  canMulliganHand,
+  decompose,
+  decomposeSelection,
+  findRiichiDiscards,
+  getRiichiWaits,
+  Mentsu,
+} from '../src/core/mentsu';
 import { ScoreContext, evaluateSelection } from '../src/core/score';
 import { TileId, baseTileAttack, kindOf } from '../src/core/tile';
 import { YAKU_CATALOG } from '../src/core/yaku';
+import { EQUIPMENTS, getEquipment } from '../src/data/equipments';
 import { MONSTERS } from '../src/data/monsters';
 
 /** "123m456p777z" のような記法から牌IDを作る（字牌 1-7 = 東南西北白發中） */
@@ -197,20 +206,93 @@ describe('戦闘・チェーン・特殊行動・連戦システム', () => {
     const drawnTile = rk.state.drawn[0];
     expect(rk.state.tileMods[drawnTile]).toBe('gold');
 
-    // リーチ判定（2セット＋2枚塔子＋不要牌1枚）
-    const tenpaiHand = tiles('123m456p23s7z');
-    expect(canDeclareRiichi(tenpaiHand, [])).toBe(true);
-    const sr = step({ ...s0, hand: tenpaiHand }, { type: 'riichi' });
+    // リーチ判定（複数の待ちが選べる手牌：123m 456p 235s → 2s切りなら4s待ち、5s切りなら1s・4s待ち）
+    const multiWaitHand = tiles('123m456p235s');
+    expect(canDeclareRiichi(multiWaitHand, [])).toBe(true);
+    const cands = findRiichiDiscards(multiWaitHand, []);
+    expect(cands.map(kindOf)).toEqual(expect.arrayContaining([19, 22])); // 2索(19) または 5索(22)
+    // 5索(multiWaitHand[8])を切った場合は1索(18)・4索(21)待ちになる
+    expect(getRiichiWaits(multiWaitHand, multiWaitHand[8], [])).toEqual([18, 21]);
+
+    // 捨て牌を指定せずにリーチ宣言するとエラーになる（手動選択必須）
+    const srErr = step({ ...s0, hand: multiWaitHand }, { type: 'riichi' });
+    expect(srErr.error).toBeDefined();
+
+    // 手動で5索を指定してリーチ宣言すると、5索が捨てられて新しい自摸牌がdrawn[0]に入りターンが進む
+    const sr = step({ ...s0, hand: multiWaitHand }, { type: 'riichi', discardTile: multiWaitHand[8] });
     expect(sr.error).toBeUndefined();
     expect(sr.state.riichi).toBe(true);
-    // リーチ宣言時に聴牌を崩さない不要牌(7z=中)が自摸切り対象(drawn[0])にセットされる
-    expect(kindOf(sr.state.drawn[0])).toBe(33);
+    expect(sr.state.hand).not.toContain(multiWaitHand[8]);
+    expect(sr.state.drawn).toHaveLength(1);
+    expect(sr.state.hand).toContain(sr.state.drawn[0]);
 
     // リーチキャンセル：リーチが解除され、ペナルティとして5ターン役封印が付与される
     const sc = step(sr.state, { type: 'cancel_riichi' });
     expect(sc.error).toBeUndefined();
     expect(sc.state.riichi).toBe(false);
     expect(sc.state.buffs.sealYakuTurns).toBe(5);
+  });
+
+  it('装備の重複取得はなく、レジェンド装備は5戦目以降のみ出現する', () => {
+    const nonLegendIds = EQUIPMENTS.filter((e) => e.rarity !== 'legend').map((e) => e.id);
+    // ほぼすべての非レジェンド装備を所持した状態（残り2個のみ未所持）でステージ1の敵を撃破
+    const owned = nonLegendIds.slice(0, nonLegendIds.length - 2);
+    const remainingNonLegend = nonLegendIds.slice(nonLegendIds.length - 2);
+
+    const s0 = newBattle(MONSTERS[0], 777);
+    const attackTiles = tiles('123m456p789s');
+    const s: BattleState = {
+      ...s0,
+      stage: 1,
+      equipments: [...owned],
+      hand: attackTiles,
+      monster: { ...s0.monster, hp: 1 },
+    };
+
+    const r = step(s, { type: 'attack', tiles: attackTiles, melds: [] });
+    expect(r.error).toBeUndefined();
+    expect(r.state.status).toBe('reward');
+    // すでに所有している装備は選択肢に出ず、ステージ1なのでレジェンドも出ないため残り2個のみが選択肢に出る
+    expect(r.state.rewardChoices).toHaveLength(2);
+    for (const id of r.state.rewardChoices) {
+      expect(owned).not.toContain(id);
+      expect(getEquipment(id)?.rarity).not.toBe('legend');
+      expect(remainingNonLegend).toContain(id);
+    }
+
+    // ステージ5以降ならレジェンド装備も出現可能になる
+    const sStage5: BattleState = {
+      ...s0,
+      stage: 5,
+      equipments: [...nonLegendIds], // 非レジェンドをすべて所持済み
+      hand: attackTiles,
+      monster: { ...s0.monster, hp: 1 },
+    };
+    const r5 = step(sStage5, { type: 'attack', tiles: attackTiles, melds: [] });
+    expect(r5.state.status).toBe('reward');
+    expect(r5.state.rewardChoices).toHaveLength(3);
+    for (const id of r5.state.rewardChoices) {
+      expect(getEquipment(id)?.rarity).toBe('legend');
+    }
+  });
+
+  it('「鈍化」デバフ中は装備の「常にチェーン+1」も封じられ、チェーン保持数が常に0になる', () => {
+    const s0 = newBattle(MONSTERS[3], 12);
+    const handTiles = tiles('555z234m789p');
+    const s: BattleState = {
+      ...s0,
+      hand: handTiles,
+      equipments: ['always_chain_1'],
+      extraChains: 0,
+      buffs: { ...s0.buffs, slowTurns: 2 },
+    };
+
+    // 白セット（役あり）＋「常にチェーン+1」装備があっても、鈍化中はチェーンが発生せずextraChainsも0のまま敵ターンへ進む
+    const r = step(s, { type: 'attack', tiles: handTiles.slice(0, 3), melds: [] });
+    expect(r.error).toBeUndefined();
+    expect(r.state.chain).toBe(0);
+    expect(r.state.extraChains).toBe(0);
+    expect(r.state.turn).toBe(2);
   });
 
   it('敵を撃破すると報酬選択になり、装備を選んで次のステージへ手牌・残り牌を持ち越す', () => {

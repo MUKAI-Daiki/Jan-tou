@@ -398,6 +398,7 @@ function applyLevelUpDirect(s: BattleState, levels: number): void {
 }
 
 function grantEquipment(s: BattleState, equipId: string, rng: Rng): void {
+  if (s.equipments.includes(equipId)) return;
   const def = getEquipment(equipId);
   s.equipments.push(equipId);
   s.log.push({ side: 'system', text: `装備「${def.name}」（${def.desc}）を獲得した！` });
@@ -438,24 +439,40 @@ function grantEquipment(s: BattleState, equipId: string, rng: Rng): void {
   enforceWallRestrictions(s);
 }
 
-function rollRandomEquipments(rng: Rng, count: number, minRarity: Rarity = 'common'): string[] {
+function rollRandomEquipments(
+  s: BattleState,
+  rng: Rng,
+  count: number,
+  minRarity: Rarity = 'common',
+  forceAllowLegend = false,
+): string[] {
   const order: Rarity[] = ['common', 'uncommon', 'rare', 'legend'];
   const minIdx = order.indexOf(minRarity);
-  const pool = EQUIPMENTS.filter((e) => order.indexOf(e.rarity) >= minIdx);
-  const weights = pool.map((e) =>
-    e.rarity === 'common' ? 45 : e.rarity === 'uncommon' ? 30 : e.rarity === 'rare' ? 18 : 7,
+  const owned = new Set(s.equipments);
+  const canLegend = forceAllowLegend || s.stage >= 5 || minRarity === 'legend';
+
+  let pool = EQUIPMENTS.filter(
+    (e) =>
+      !owned.has(e.id) &&
+      order.indexOf(e.rarity) >= minIdx &&
+      (canLegend || e.rarity !== 'legend'),
   );
+
+  // 未所持の該当レアリティ装備が足りない場合は未所持全体から補う
+  if (pool.length < count) {
+    pool = EQUIPMENTS.filter((e) => !owned.has(e.id) && (canLegend || e.rarity !== 'legend'));
+  }
+
+  const rarityWeight = (r: Rarity): number =>
+    r === 'common' ? 65 : r === 'uncommon' ? 24 : r === 'rare' ? 9 : 2;
+
   const chosen: string[] = [];
-  const used = new Set<string>();
-  for (let i = 0; i < count; i++) {
+  const remaining = [...pool];
+  for (let i = 0; i < count && remaining.length > 0; i++) {
+    const weights = remaining.map((e) => rarityWeight(e.rarity));
     const idx = rng.weighted(weights);
-    let pick = pool[idx].id;
-    // 3択ではなるべく異なる装備を提示する
-    for (let retry = 0; retry < 10 && used.has(pick); retry++) {
-      pick = pool[rng.weighted(weights)].id;
-    }
-    used.add(pick);
-    chosen.push(pick);
+    chosen.push(remaining[idx].id);
+    remaining.splice(idx, 1);
   }
   return chosen;
 }
@@ -563,7 +580,9 @@ function executeSingleMonsterAction(s: BattleState, rng: Rng, allowMultiStrike: 
     }
     case 'slow': {
       s.buffs.slowTurns = Math.max(s.buffs.slowTurns, 2);
-      s.log.push({ side: 'monster', text: `${def.name}の「鈍化」！ チェーンができなくなった！` });
+      s.extraChains = 0;
+      s.chain = 0;
+      s.log.push({ side: 'monster', text: `${def.name}の「鈍化」！ 装備効果を含めチェーンが完全に封じられた！` });
       break;
     }
     case 'seal_tiles': {
@@ -726,10 +745,10 @@ function endPlayerTurnAndAdvance(s: BattleState, rng: Rng): void {
     s.log.push({ side: 'system', text: `ターン終了時回復：HPが ${heal.toLocaleString()} 回復した` });
   }
 
-  // 次ターン開始
+  // 次ターン開始（鈍化中は装備によるチェーンプラスも封じる）
   s.turn++;
   s.chain = 0;
-  s.extraChains = countActiveEquip(s, 'always_chain_1');
+  s.extraChains = s.buffs.slowTurns > 0 ? 0 : countActiveEquip(s, 'always_chain_1');
   s.nextChainMult = 1;
 }
 
@@ -740,7 +759,7 @@ function handleMonsterDefeated(s: BattleState, rng: Rng): void {
     s.log.push({ side: 'system', text: '全8連戦を制覇した！完全勝利！！' });
   } else {
     s.status = 'reward';
-    s.rewardChoices = rollRandomEquipments(rng, 3, 'common');
+    s.rewardChoices = rollRandomEquipments(s, rng, 3, 'common');
     s.log.push({ side: 'system', text: '報酬の装備を3つの中から1つ選んでください' });
   }
 }
@@ -841,7 +860,7 @@ export function step(prev: BattleState, action: Action): StepResult {
     s.turn = 1;
     s.chain = 0;
     s.sealedEquipIndices = [];
-    s.extraChains = countActiveEquip(s, 'always_chain_1');
+    s.extraChains = s.buffs.slowTurns > 0 ? 0 : countActiveEquip(s, 'always_chain_1');
     s.nextChainMult = 1;
     s.riichi = false;
     s.mulligansUsed = 0;
@@ -876,14 +895,30 @@ export function step(prev: BattleState, action: Action): StepResult {
       if (!canDeclareRiichi(s.hand, s.melds)) {
         return fail('リーチは「あと1枚で3セットが揃う状態」のときのみ宣言できます');
       }
-      const discards = findRiichiDiscards(s.hand, s.melds);
-      if (discards.length > 0 && !hasThreeSets(s.hand, s.melds)) {
-        const chosen =
-          action.discardTile !== undefined && discards.includes(action.discardTile)
-            ? action.discardTile
-            : discards[0];
-        s.drawn = [chosen];
+      const need = 3 - s.melds.length;
+      if (s.hand.length >= need * 3) {
+        const discards = findRiichiDiscards(s.hand, s.melds);
+        if (action.discardTile === undefined || !discards.includes(action.discardTile)) {
+          return fail('リーチ宣言で捨てる牌（聴牌になる牌）を1枚選んでください');
+        }
+        // 選んだ捨て牌1枚を切ってリーチ宣言＆攻撃処理に移行
+        s.riichi = true;
+        const discardName = kindName(kindOf(action.discardTile));
+        s.log.push({
+          side: 'player',
+          text: `${discardName} を切ってリーチ宣言！ 3セットが揃うまで自動で自摸切りを進めます！`,
+        });
+        // 切った牌を除外して1枚補充（その補充牌が s.drawn[0] になり、敵も行動する）
+        const dIdx = s.hand.indexOf(action.discardTile);
+        if (dIdx >= 0) s.hand.splice(dIdx, 1);
+        delete s.sealedTiles[action.discardTile];
+        s.drawn = [];
+        drawOne(s, rng);
+        endPlayerTurnAndAdvance(s, rng);
+        s.rng = rng.state;
+        return { state: s };
       }
+
       s.riichi = true;
       s.log.push({ side: 'player', text: 'リーチ宣言！ 3セットが揃うまで自動で自摸切りを進めます！' });
       s.rng = rng.state;
@@ -1141,7 +1176,7 @@ export function step(prev: BattleState, action: Action): StepResult {
             });
             break;
           case 'daisangen': {
-            const rewards = rollRandomEquipments(rng, 3, 'uncommon');
+            const rewards = rollRandomEquipments(s, rng, 3, 'uncommon');
             for (const eqId of rewards) grantEquipment(s, eqId, rng);
             break;
           }
@@ -1157,8 +1192,8 @@ export function step(prev: BattleState, action: Action): StepResult {
             break;
           }
           case 'sankantsu': {
-            const [legId] = rollRandomEquipments(rng, 1, 'legend');
-            grantEquipment(s, legId, rng);
+            const [legId] = rollRandomEquipments(s, rng, 1, 'legend', true);
+            if (legId) grantEquipment(s, legId, rng);
             s.log.push({ side: 'system', text: '【三槓子効果】このバトルの獲得経験値が30倍になった！' });
             break;
           }
@@ -1245,20 +1280,24 @@ export function step(prev: BattleState, action: Action): StepResult {
         return { state: s, attack: ev };
       }
 
-      // チェーン判定
-      if ((s.buffs.slowTurns ?? 0) === 0) {
-        s.extraChains += ev.gainedChains;
-      }
-      if (s.extraChains > 0) {
-        s.extraChains--;
-        s.chain++;
-        s.nextChainMult = nextMult;
-        s.log.push({
-          side: 'system',
-          text: `チェーン発生！（${s.chain} Chain${nextMult > 1 ? `・次倍率×${nextMult}` : ''} ／ 残り追加行動 ${s.extraChains}回）もう一度攻撃できます！`,
-        });
-      } else {
+      // チェーン判定（鈍化中は装備効果も含めチェーン保持数は常に0）
+      if (s.buffs.slowTurns > 0) {
+        s.extraChains = 0;
+        s.chain = 0;
         endPlayerTurnAndAdvance(s, rng);
+      } else {
+        s.extraChains += ev.gainedChains;
+        if (s.extraChains > 0) {
+          s.extraChains--;
+          s.chain++;
+          s.nextChainMult = nextMult;
+          s.log.push({
+            side: 'system',
+            text: `チェーン発生！（${s.chain} Chain${nextMult > 1 ? `・次倍率×${nextMult}` : ''} ／ 残り追加行動 ${s.extraChains}回）もう一度攻撃できます！`,
+          });
+        } else {
+          endPlayerTurnAndAdvance(s, rng);
+        }
       }
 
       s.rng = rng.state;

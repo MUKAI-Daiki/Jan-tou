@@ -88,12 +88,64 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   padding: 14px;
   display: grid;
   gap: 10px;
+  border-radius: 14px;
+  transition: background 0.28s ease, box-shadow 0.28s ease;
 }
 .enemy, .player, .table, .wall, .log {
   background: var(--panel);
   border-radius: 10px;
   padding: 12px 16px;
   position: relative;
+  border: 2px solid transparent;
+  transition: background 0.28s ease, border-color 0.28s ease, box-shadow 0.28s ease;
+}
+
+/* 攻撃時（プレイヤー行動中）と被弾時（敵行動中）のUI色味変化 */
+.battle.phase-player {
+  background: radial-gradient(ellipse at center, rgba(242, 193, 78, 0.22) 0%, rgba(14, 116, 144, 0.18) 100%);
+  box-shadow: 0 0 32px rgba(242, 193, 78, 0.28);
+}
+.battle.phase-player .table {
+  background: rgba(55, 45, 10, 0.52);
+  border-color: var(--accent);
+  box-shadow: 0 0 18px rgba(242, 193, 78, 0.35);
+}
+.battle.phase-player .enemy {
+  background: rgba(70, 48, 12, 0.45);
+  border-color: rgba(242, 193, 78, 0.65);
+}
+
+.battle.phase-monster {
+  background: radial-gradient(ellipse at center, rgba(220, 38, 38, 0.34) 0%, rgba(127, 29, 29, 0.25) 100%);
+  box-shadow: 0 0 36px rgba(226, 87, 76, 0.42);
+}
+.battle.phase-monster .player,
+.battle.phase-monster .table {
+  background: rgba(95, 18, 18, 0.55);
+  border-color: var(--danger);
+  box-shadow: 0 0 20px rgba(226, 87, 76, 0.45);
+}
+.battle.phase-monster .enemy {
+  background: rgba(110, 20, 20, 0.52);
+  border-color: #ff6b6b;
+}
+
+.phase-tag {
+  font-size: 12px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-weight: bold;
+  letter-spacing: 0.04em;
+}
+.player-turn-tag {
+  background: var(--accent);
+  color: #1b1b1b;
+  box-shadow: 0 0 10px rgba(242, 193, 78, 0.6);
+}
+.enemy-turn-tag {
+  background: var(--danger);
+  color: #fff;
+  box-shadow: 0 0 10px rgba(226, 87, 76, 0.7);
 }
 .enemy-head {
   display: flex;
@@ -416,7 +468,27 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 .tile.copy-target {
   box-shadow: 0 3px 0 #b9ae8e, 0 0 0 3px #60a5fa !important;
 }
-.tile.new { background: linear-gradient(180deg, #fffbe0 0%, #efe2a8 100%); }
+/* 自摸（補充）牌は金牌と区別するため背景色は変えず太枠囲い表示にする */
+.tile.new {
+  outline: 3.5px solid #38bdf8;
+  outline-offset: 1px;
+  box-shadow: 0 3px 0 #b9ae8e, 0 0 12px rgba(56, 189, 248, 0.75);
+}
+/* リーチ中の右端自摸牌はスペースを空けて分離表示 */
+.tile.tsumo-gap {
+  margin-left: 16px;
+}
+/* リーチ宣言時の捨て牌候補ハイライト */
+.tile.riichi-candidate {
+  outline: 3.5px solid #f59e0b;
+  outline-offset: 1px;
+  box-shadow: 0 3px 0 #b9ae8e, 0 0 14px rgba(245, 158, 11, 0.85);
+}
+.tile.riichi-disabled {
+  opacity: 0.28;
+  filter: grayscale(0.6);
+  cursor: not-allowed !important;
+}
 
 /* 特殊牌（金牌・赤牌・虹牌・封印牌） */
 .tile.mod-gold {
@@ -470,6 +542,17 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   background: #b91c1c;
   color: #fff;
 }
+.tile .tbadge {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  font-size: 8px;
+  padding: 0 3px;
+  border-radius: 3px;
+  line-height: 1.2;
+  background: #0284c7;
+  color: #fff;
+}
 
 .tile .t { font-size: 21px; }
 .tile .b { font-size: 14px; }
@@ -495,7 +578,7 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 .tile.mini .b { font-size: 8.5px; }
 .tile.mini.s-p .t, .tile.mini.s-z .t { font-size: 15px; }
 .tile.mini.s-p .b { font-size: 7px; }
-.tile.mini .mbadge, .tile.mini .pwr, .tile.mini .sbadge { display: none; }
+.tile.mini .mbadge, .tile.mini .pwr, .tile.mini .sbadge, .tile.mini .tbadge { display: none; }
 
 /* ---------- モーダル・報酬 ---------- */
 .overlay {

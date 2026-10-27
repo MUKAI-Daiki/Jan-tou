@@ -5,7 +5,14 @@ import {
   getActiveEquips,
   wallCounts,
 } from '../core/battle';
-import { canDeclareRiichi, canMulliganHand, findRiichiDiscards, hasThreeSets, kanCandidates } from '../core/mentsu';
+import {
+  canDeclareRiichi,
+  canMulliganHand,
+  findRiichiDiscards,
+  getRiichiWaits,
+  hasThreeSets,
+  kanCandidates,
+} from '../core/mentsu';
 import { AttackEval, calcSingleTilePower, effectiveTileMod } from '../core/score';
 import {
   ACTIVE_KINDS,
@@ -26,15 +33,19 @@ import { EXP_PER_LEVEL, MAX_STAGE, MONSTERS } from '../data/monsters';
 export interface UiState {
   selected: Set<TileId>;
   selectedMelds: Set<number>;
-  /** 複製・サーチ用に最初に選ばれた手牌ID（順序保持用） */
+  /** 複製・サーチ用に選択された手牌ID（順序保持用） */
   selectionOrder: TileId[];
   /** サーチ待機モードかどうか */
   searchMode: boolean;
+  /** リーチ宣言時の捨て牌選択モードかどうか */
+  riichiSelectMode: boolean;
   /** 過去ログを開いているかどうか */
   logOpen: boolean;
   /** 現在ライブ表示中のテキスト */
   liveLogText: string;
   liveLogSide: 'player' | 'monster' | 'system';
+  /** 現在の攻撃・被弾演出フェーズ */
+  combatPhase: 'idle' | 'player' | 'monster';
   message: string;
   showYakuModal?: boolean;
 }
@@ -52,6 +63,7 @@ export interface Preview {
   canAttack: boolean;
   canKan: boolean;
   canRiichi: boolean;
+  canConfirmRiichi: boolean;
   canMulligan: boolean;
   ev?: AttackEval;
 }
@@ -63,7 +75,7 @@ export function tileHtml(
   kind: Kind,
   attrs = '',
   cls = '',
-  opts: { mod?: TileMod; power?: number; sealed?: number } = {},
+  opts: { mod?: TileMod; power?: number; sealed?: number; isTsumo?: boolean } = {},
 ): string {
   const f = tileFace(kind);
   const s = suitOf(kind);
@@ -81,9 +93,10 @@ export function tileHtml(
           : '';
   const sealBadge =
     opts.sealed && opts.sealed > 0 ? `<span class="sbadge">封${opts.sealed}</span>` : '';
+  const tsumoBadge = opts.isTsumo ? '<span class="tbadge">自摸</span>' : '';
 
   return `<div class="tile s-${s}${honorCls}${modCls}${sealCls} ${cls}" ${attrs}>
-    ${modBadge}${sealBadge}
+    ${modBadge}${sealBadge}${tsumoBadge}
     <span class="t">${f.top}</span>${f.bottom ? `<span class="b">${f.bottom}</span>` : ''}
     ${pwrBadge}
   </div>`;
@@ -194,8 +207,8 @@ export function renderTitle(showYakuModal = false): string {
         <li><b>牌の攻撃力とセットボーナス</b>：1・9・字牌は<b>10</b>、2〜8はその数字。セットが含まれるとボーナス加算（<b>同牌セット+20 ／ 並びセット+10 ／ ペア+5 ／ カン+30＆基礎攻撃+50%</b>）。</li>
         <li><b>役とチェーン</b>：攻撃に「役」が含まれると固有の<b>効果</b>が発動し、<b>チェーン（連続攻撃）</b>が発生！チェーン中はダメージに <b>×(Chain数＋1)</b> の補正がかかる。</li>
         <li><b>特殊牌</b>：<b>金牌</b>は1枚ごとに最終ダメージ<b>+50%</b>。<b>赤牌</b>は金牌効果＋役攻撃で経験値ボーナス。<b>虹牌</b>はセットに含めると最終ダメージ<b>2倍＆チェーン+2</b>。</li>
-        <li><b>カン・リーチ・マリガン</b>：同種4枚で<b>カン</b>（キープ＋金牌1枚補充、2セット役以上で使用可）。あと1枚で3セットが揃う時は<b>リーチ</b>宣言可（完成攻撃で威力2倍＆チェーン可）。1ターン目に1・9・字牌が6枚以上なら<b>マリガン</b>（手牌総入れ替え・2回まで）可能。</li>
-        <li><b>8連戦・成長・装備</b>：与ダメージ＋被ダメージがそのまま経験値になり、500EXPごとにレベルアップ（最大HP+10%・HP30%回復）。勝利ごとに3択の<b>装備</b>を獲得し、手牌・持続効果・残り牌を次の戦いへ持ち越す！</li>
+        <li><b>カン・リーチ・マリガン</b>：同種4枚で<b>カン</b>（キープ＋金牌1枚補充、2セット役以上で使用可）。あと1枚で3セットが揃う時は捨て牌を1枚選んで<b>リーチ</b>宣言可（右端の自摸牌をオート自摸切り、完成攻撃で威力2倍＆チェーン可）。1ターン目に1・9・字牌が6枚以上なら<b>マリガン</b>（手牌総入れ替え・2回まで）可能。</li>
+        <li><b>8連戦・成長・装備</b>：与ダメージ＋被ダメージがそのまま経験値になり、500EXPごとにレベルアップ（最大HP+10%・HP30%回復）。勝利ごとに3択の<b>ユニーク装備</b>を獲得し、手牌・持続効果・残り牌を次の戦いへ持ち越す！</li>
       </ul>
     </section>
     <h2>ステージを選択して開始</h2>
@@ -221,7 +234,7 @@ function renderBuffBadges(s: BattleState): string {
 
   if (b.sealYakuTurns > 0) badges.push(`<span class="badge debuff">役封印(${b.sealYakuTurns}T)</span>`);
   if (b.atkDownTurns > 0) badges.push(`<span class="badge debuff">攻撃力-10(${b.atkDownTurns}T)</span>`);
-  if (b.slowTurns > 0) badges.push(`<span class="badge debuff">鈍化:チェーン不可(${b.slowTurns}T)</span>`);
+  if (b.slowTurns > 0) badges.push(`<span class="badge debuff">鈍化:チェーン完全封じ(${b.slowTurns}T)</span>`);
   if (b.venomTurns > 0) badges.push(`<span class="badge debuff">猛毒:攻撃-20/HP-10%(${b.venomTurns}T)</span>`);
   return badges.join('');
 }
@@ -250,7 +263,7 @@ function renderRewardModal(s: BattleState): string {
   return `<div class="overlay">
     <div class="reward-modal">
       <h2>ステージ ${s.stage} クリア！ 報酬装備を選択</h2>
-      <p class="reward-sub">3つのうち1つを選んで獲得し、手牌と状態を引き継いで第${s.stage + 1}戦へ進みます。</p>
+      <p class="reward-sub">未所持の装備から1つを選んで獲得し、手牌と状態を引き継いで第${s.stage + 1}戦へ進みます。</p>
       <div class="equip-choices">${cards}</div>
     </div>
   </div>`;
@@ -314,21 +327,51 @@ export function renderBattle(v: BattleView): string {
     })
     .join('');
 
-  // 手牌
-  const drawn = new Set(s.drawn);
-  const hand = sortTiles(s.hand)
+  // 手牌描画：
+  // リーチ中は固定された手牌を左側に理牌し、自摸した1枚(s.drawn[0])はソートせず必ず右端に独立表示する！
+  const drawnSet = new Set(s.drawn);
+  const validRiichiDiscards = ui.riichiSelectMode
+    ? new Set(findRiichiDiscards(s.hand, s.melds))
+    : null;
+
+  let orderedHand: TileId[];
+  let separatedTsumoTile: TileId | undefined;
+  if (s.riichi && s.drawn.length === 1 && s.hand.includes(s.drawn[0])) {
+    separatedTsumoTile = s.drawn[0];
+    orderedHand = [...sortTiles(s.hand.filter((t) => t !== separatedTsumoTile)), separatedTsumoTile];
+  } else {
+    orderedHand = sortTiles(s.hand);
+  }
+
+  const hand = orderedHand
     .map((t) => {
       const k = kindOf(t);
       const mod = effectiveTileMod(t, s.tileMods, activeEquips);
       const pwr = calcSingleTilePower(k, activeEquips);
       const sealed = s.sealedTiles[t] ?? 0;
       const orderIdx = ui.selectionOrder.indexOf(t);
+      const isNew = drawnSet.has(t);
+      const isSeparatedTsumo = t === separatedTsumoTile;
+      const riichiCls = validRiichiDiscards
+        ? validRiichiDiscards.has(t)
+          ? 'riichi-candidate'
+          : 'riichi-disabled'
+        : '';
       const cls = [
         ui.selected.has(t) ? 'selected' : '',
-        drawn.has(t) ? 'new' : '',
+        isNew ? 'new' : '',
+        isSeparatedTsumo ? 'tsumo-gap' : '',
+        riichiCls,
         orderIdx === 0 && ui.selectionOrder.length === 2 ? 'copy-target' : '',
-      ].join(' ');
-      return tileHtml(k, `data-tile="${t}"`, cls, { mod, power: pwr, sealed });
+      ]
+        .filter(Boolean)
+        .join(' ');
+      return tileHtml(k, `data-tile="${t}"`, cls, {
+        mod,
+        power: pwr,
+        sealed,
+        isTsumo: isNew,
+      });
     })
     .join('');
 
@@ -376,14 +419,27 @@ export function renderBattle(v: BattleView): string {
   const riichiAutoRunning = s.riichi && !hasThreeSets(s.hand, s.melds) && s.status === 'playing';
   const liveIcon =
     ui.liveLogSide === 'monster' ? '👾' : ui.liveLogSide === 'player' ? '⚔️' : '📢';
+  const phaseCls =
+    ui.combatPhase === 'player'
+      ? ' phase-player'
+      : ui.combatPhase === 'monster'
+        ? ' phase-monster'
+        : '';
+  const phaseBanner =
+    ui.combatPhase === 'player'
+      ? '<span class="phase-tag player-tag">⚔️ プレイヤーの攻撃！</span>'
+      : ui.combatPhase === 'monster'
+        ? '<span class="phase-tag monster-tag">👾 敵の攻撃・被弾！</span>'
+        : '';
 
-  return `<main class="battle">
+  return `<main class="battle${phaseCls}">
     <section class="enemy${monsterHit}">
       <div class="enemy-head">
         <span class="stage-badge">STAGE ${s.stage} / ${MAX_STAGE}</span>
         <span class="rank">${esc(s.monster.def.rank)}</span>
         <span class="mname">${esc(s.monster.def.name)}</span>
         <span class="matk">基礎攻撃力 ${s.monster.def.atk}</span>
+        ${phaseBanner}
         <div class="buff-row">${renderEnemyBuffBadges(s)}</div>
       </div>
       ${hpBar(s.monster.hp, s.monster.maxHp, 'enemy-hp')}
@@ -398,11 +454,7 @@ export function renderBattle(v: BattleView): string {
           📜 ログ履歴を${ui.logOpen ? '閉じる ▲' : '開く ▼'}（${s.log.length}）
         </button>
       </div>
-      ${
-        ui.logOpen
-          ? `<ul class="log" id="log">${log}</ul>`
-          : ''
-      }
+      ${ui.logOpen ? `<ul class="log" id="log">${log}</ul>` : ''}
     </section>
 
     <section class="middle single-col">
@@ -430,7 +482,7 @@ export function renderBattle(v: BattleView): string {
         }
         ${
           riichiAutoRunning
-            ? '<span class="riichi-auto-indicator">🔄 リーチ中：オート自摸切り進行中…</span>'
+            ? '<span class="riichi-auto-indicator">🔄 リーチ中：右端の自摸牌をオート自摸切り中…</span>'
             : ''
         }
         <div class="buff-row">${renderBuffBadges(s)}</div>
@@ -440,29 +492,38 @@ export function renderBattle(v: BattleView): string {
         <div class="hand">${hand}</div>
         ${melds ? `<div class="melds">${melds}</div>` : ''}
       </div>
-      <div class="preview${preview.ev?.valid ? ' ok' : ''}">
+      <div class="preview${preview.ev?.valid || preview.canConfirmRiichi ? ' ok' : ''}">
         <div>${esc(preview.text)}</div>
         ${preview.subText ? `<div class="preview-sub">${esc(preview.subText)}</div>` : ''}
       </div>
       ${ui.message ? `<div class="message">${esc(ui.message)}</div>` : ''}
       <div class="actions">
-        <button class="btn-attack" data-action="attack" ${preview.canAttack ? '' : 'disabled'}>
-          ${s.healMode ? '💚 治療攻撃（回復）' : '⚔️ 攻撃（破棄＆補充）'}
-        </button>
-        <button class="btn-kan" data-action="kan" ${preview.canKan ? '' : 'disabled'}>カン（4枚キープ）</button>
         ${
-          s.riichi
-            ? '<button class="btn-cancel-riichi" data-action="cancel-riichi">🚫 リーチキャンセル（5T役封印）</button>'
-            : `<button class="btn-riichi" data-action="riichi" ${preview.canRiichi ? '' : 'disabled'}>リーチ宣言</button>`
+          ui.riichiSelectMode
+            ? `<button class="btn-riichi" data-action="confirm-riichi" ${
+                preview.canConfirmRiichi ? '' : 'disabled'
+              }>🔥 この牌を切ってリーチ確定！</button>
+              <button class="btn-clear" data-action="cancel-riichi-select">戻る</button>`
+            : `<button class="btn-attack" data-action="attack" ${preview.canAttack ? '' : 'disabled'}>
+                ${s.healMode ? '💚 治療攻撃（回復）' : '⚔️ 攻撃（破棄＆補充）'}
+              </button>
+              <button class="btn-kan" data-action="kan" ${preview.canKan ? '' : 'disabled'}>カン（4枚キープ）</button>
+              ${
+                s.riichi
+                  ? '<button class="btn-cancel-riichi" data-action="cancel-riichi">🚫 リーチキャンセル（5T役封印）</button>'
+                  : `<button class="btn-riichi" data-action="start-riichi-select" ${
+                      preview.canRiichi ? '' : 'disabled'
+                    }>リーチ宣言（捨て牌選択）</button>`
+              }
+              ${
+                preview.canMulligan
+                  ? `<button class="btn-mulligan" data-action="mulligan">マリガン（残り${2 - s.mulligansUsed}回）</button>`
+                  : ''
+              }
+              <button class="btn-clear" data-action="select-all">全選択</button>
+              <button class="btn-clear" data-action="clear">選択解除</button>
+              <button class="btn-yaku" data-action="open-yaku">役一覧</button>`
         }
-        ${
-          preview.canMulligan
-            ? `<button class="btn-mulligan" data-action="mulligan">マリガン（残り${2 - s.mulligansUsed}回）</button>`
-            : ''
-        }
-        <button class="btn-clear" data-action="select-all">全選択</button>
-        <button class="btn-clear" data-action="clear">選択解除</button>
-        <button class="btn-yaku" data-action="open-yaku">役一覧</button>
       </div>
       ${
         hasHealSkill || hasResetWallSkill || hasCopySkill || hasSearchSkill
@@ -523,4 +584,13 @@ export function renderBattle(v: BattleView): string {
   </main>`;
 }
 
-export { buildScoreContext, canDeclareRiichi, canMulliganHand, findRiichiDiscards, hasThreeSets, kanCandidates, kindName };
+export {
+  buildScoreContext,
+  canDeclareRiichi,
+  canMulliganHand,
+  findRiichiDiscards,
+  getRiichiWaits,
+  hasThreeSets,
+  kanCandidates,
+  kindName,
+};
