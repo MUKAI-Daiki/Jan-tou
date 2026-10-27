@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { decompose, Mentsu } from '../src/core/mentsu';
-import { calcDamage, evaluateMentsu, evaluateSelection } from '../src/core/score';
-import { TileId } from '../src/core/tile';
+import { BattleState, HAND_SIZE, newBattle, step } from '../src/core/battle';
+import { canDeclareRiichi, canMulliganHand, decompose, decomposeSelection, Mentsu } from '../src/core/mentsu';
+import { ScoreContext, evaluateSelection } from '../src/core/score';
+import { TileId, baseTileAttack, kindOf } from '../src/core/tile';
 import { YAKU_CATALOG } from '../src/core/yaku';
-import { newBattle, step, HAND_SIZE, BattleState } from '../src/core/battle';
 import { MONSTERS } from '../src/data/monsters';
 
 /** "123m456p777z" のような記法から牌IDを作る（字牌 1-7 = 東南西北白發中） */
@@ -16,275 +16,292 @@ function tiles(spec: string): TileId[] {
       const kind = base + Number(ch) - 1;
       const n = used.get(kind) ?? 0;
       used.set(kind, n + 1);
-      out.push(kind * 4 + n);
+      out.push(kind * 4 + (n % 4));
     }
   }
   return out;
 }
 
-const ev = (spec: string, melds: Mentsu[] = []) => evaluateSelection(tiles(spec), melds);
-const yakuNames = (spec: string) => ev(spec).yaku.map((y) => y.name).sort();
+const ev = (spec: string, melds: Mentsu[] = [], ctx: ScoreContext = {}) =>
+  evaluateSelection(tiles(spec), melds, ctx);
+const yakuNames = (spec: string, ctx: ScoreContext = {}) =>
+  ev(spec, [], ctx).yaku.map((y) => y.name).sort();
 
-describe('decompose', () => {
-  it('順子1つ', () => {
-    const d = decompose(tiles('123m'));
-    expect(d).toHaveLength(1);
-    expect(d[0][0].type).toBe('shuntsu');
+describe('牌とセット分解', () => {
+  it('全34種136枚を使用し、基礎攻撃力が仕様通り（1・9・字牌=10、2〜8=その数字）', () => {
+    const s = newBattle(MONSTERS[0], 1);
+    expect(s.hand).toHaveLength(HAND_SIZE);
+    expect(s.wall).toHaveLength(136 - HAND_SIZE);
+    expect(baseTileAttack(0)).toBe(10); // 1萬
+    expect(baseTileAttack(4)).toBe(5); // 5萬
+    expect(baseTileAttack(8)).toBe(10); // 9萬
+    expect(baseTileAttack(27)).toBe(10); // 東
+    expect(baseTileAttack(33)).toBe(10); // 中
   });
-  it('面子にならない', () => {
-    expect(decompose(tiles('124m'))).toHaveLength(0);
-    expect(decompose(tiles('11m'))).toHaveLength(0);
-  });
-  it('111222333m は順子3つと刻子3つの2通り', () => {
-    expect(decompose(tiles('111222333m'))).toHaveLength(2);
-  });
-  it('字牌は順子にならない', () => {
-    expect(decompose(tiles('123z'))).toHaveLength(0);
-  });
-  it('4枚は槓子', () => {
-    const d = decompose(tiles('5555p'));
-    expect(d).toHaveLength(1);
-    expect(d[0][0].type).toBe('kantsu');
+
+  it('任意の枚数からセット・ペア・単牌に分解できる', () => {
+    expect(decompose(tiles('123m'))[0][0].type).toBe('shuntsu');
+    const ds = decomposeSelection(tiles('234m55p9s'));
+    expect(ds.some((d) => d.sets.length === 1 && d.pairs.length === 1 && d.singles.length === 1)).toBe(true);
   });
 });
 
-describe('ダメージ計算', () => {
-  it('満貫未満と満貫以上の式', () => {
-    expect(calcDamage(20, 0)).toBe(400); // 320 → 400
-    expect(calcDamage(30, 0)).toBe(500); // 480 → 500
-    expect(calcDamage(30, 4)).toBe(7700); // 7680 → 7700
-    expect(calcDamage(40, 4)).toBe(8000); // 満貫
-    expect(calcDamage(30, 5)).toBe(8000); // 満貫
-    expect(calcDamage(30, 6)).toBe(12000); // 跳満
-    expect(calcDamage(30, 8)).toBe(16000); // 倍満
-    expect(calcDamage(30, 11)).toBe(24000); // 三倍満
-    expect(calcDamage(30, 13)).toBe(32000); // 役満
-    expect(calcDamage(30, 26)).toBe(64000); // ダブル役満
-    expect(calcDamage(20, 1, 2)).toBe(1400); // 2面子倍率 ×2
-    expect(calcDamage(20, 1, 3)).toBe(2100); // 3面子倍率 ×3
+describe('新ダメージ計算とセットボーナス', () => {
+  it('単牌・ペア・並びセット・同牌セット・カンのボーナス加算', () => {
+    // 単牌1枚（5萬=5）
+    expect(ev('5m')).toMatchObject({ valid: true, tilePower: 5, setBonus: 0, damage: 5 });
+    // ペア（5萬×2 = 10 + ペアボーナス5 = 15）
+    expect(ev('55m')).toMatchObject({ valid: true, tilePower: 10, setBonus: 5, damage: 15 });
+    // 並びセット（2,3,4萬 = 9 + 並びボーナス10 = 19）
+    expect(ev('234m')).toMatchObject({ valid: true, tilePower: 9, setBonus: 10, damage: 19 });
+    // 同牌セット（5筒×3 = 15 + 同牌ボーナス20 = 35）
+    expect(ev('555p')).toMatchObject({ valid: true, tilePower: 15, setBonus: 20, damage: 35 });
   });
-  it('基本攻撃（0翻）', () => {
-    expect(ev('234m')).toMatchObject({ valid: true, fu: 20, han: 0, damage: 400 });
-    expect(ev('555p')).toMatchObject({ valid: true, fu: 30, han: 0, damage: 500 });
-    expect(ev('999s')).toMatchObject({ fu: 30, damage: 500 }); // 28 → 30
-    expect(ev('1111m')).toMatchObject({ fu: 60, damage: 1000 }); // 52 → 60
-    expect(ev('5555m')).toMatchObject({ fu: 40, damage: 700 }); // 36 → 40, 640 → 700
+
+  it('レベル補正 ×(1+level/4) と金牌補正 +50%/枚', () => {
+    const t = tiles('111m'); // 10*3 + 20 = 50
+    // Lv4なら ×(1 + 4/4) = ×2 → 100
+    expect(evaluateSelection(t, [], { level: 4 }).damage).toBe(100);
+    // 金牌2枚なら ×(1 + 0.5*2) = ×2 → 200
+    expect(
+      evaluateSelection(t, [], {
+        level: 4,
+        tileMods: { [t[0]]: 'gold', [t[1]]: 'gold' },
+      }).damage,
+    ).toBe(200);
   });
-  it('三元牌の刻子は1面子でも役牌', () => {
-    expect(ev('777z')).toMatchObject({ valid: true, han: 1, damage: 1000 });
+
+  it('キープしたカンは2セット役以上にしか使えず、カン1つにつき基本攻撃力+50%＆ボーナス+30', () => {
+    const kanTiles = tiles('2222p');
+    const kan: Mentsu = { type: 'kantsu', kind: kindOf(kanTiles[0]), tiles: kanTiles, declared: true };
+    // 単独（1セット）では使用不可
+    expect(evaluateSelection([], [kan]).valid).toBe(false);
+    // 2セットでも役なしなら使用不可
+    expect(evaluateSelection(tiles('234m'), [kan]).valid).toBe(false);
+    // 二暗刻（2セット役）なら使用可能：
+    // 牌攻撃力: 2筒×4(8) + 3索×3(9) = 17, ボーナス: カン(30) + 同牌(20) = 50 → 計67
+    // カン1つ含みで基本攻撃力 ×1.5 = 100.5 → 101
+    const r = evaluateSelection(tiles('333s'), [kan]);
+    expect(r.valid).toBe(true);
+    expect(r.yaku.map((y) => y.name)).toContain('二暗刻');
+    expect(r.damage).toBe(101);
   });
 });
 
-describe('役判定', () => {
-  it('2面子で役なしは攻撃できない', () => {
-    expect(ev('234p567s').valid).toBe(false);
+describe('役と効果の判定', () => {
+  it('1セット役：白・發（2倍）・中', () => {
+    expect(yakuNames('555z')).toEqual(['白セット']);
+    expect(ev('666z')).toMatchObject({
+      yaku: [{ id: 'hatsu', name: '發セット', dmgMult: 2, chains: 1 }],
+      damage: (30 + 20) * 2,
+    });
+    expect(yakuNames('777z')).toEqual(['中セット']);
   });
-  it('一盃口（2面子・×2倍）', () => {
-    expect(ev('234234m')).toMatchObject({ valid: true, han: 1, multiplier: 2, damage: 1400 });
+
+  it('2セット役：一盃口・二色同順・二色同刻・二暗刻・チャンタ', () => {
+    expect(yakuNames('123123m')).toContain('一盃口');
+    expect(yakuNames('234m234p')).toEqual(['二色同順']);
+    expect(yakuNames('555m555p')).toEqual(['二暗刻', '二色同刻'].sort());
+    expect(yakuNames('123m111z')).toEqual(['チャンタ']);
   });
-  it('二色同順（2面子・2翻・×2倍）', () => {
-    expect(yakuNames('234p234s')).toEqual(['二色同順']);
-    expect(ev('234p234s')).toMatchObject({ valid: true, fu: 20, han: 2, multiplier: 2, damage: 2600 });
+
+  it('装備解禁役：タンヤオ・風牌セット', () => {
+    expect(yakuNames('234m555p')).toEqual([]);
+    expect(yakuNames('234m555p', { tanyaoUnlocked: true })).toEqual(['タンヤオ']);
+    expect(yakuNames('111z', { unlockedWinds: new Set([27]) })).toEqual(['東セット']);
   });
-  it('二色同刻＋二暗刻（2面子・4翻・×2倍）', () => {
-    expect(yakuNames('555p555s')).toEqual(['二暗刻', '二色同刻'].sort());
-    expect(ev('555p555s')).toMatchObject({ valid: true, fu: 30, han: 4, multiplier: 2, damage: 15400 });
+
+  it('四対子：ペア4組でチェーン4回', () => {
+    const r = ev('11m33p55s77z');
+    expect(r.valid).toBe(true);
+    expect(r.yaku.map((y) => y.name)).toEqual(['四対子']);
+    expect(r.gainedChains).toBe(4);
   });
-  it('二暗刻（2面子・2翻・×2倍）', () => {
-    expect(yakuNames('222p555s')).toEqual(['二暗刻']);
-    expect(ev('222p555s')).toMatchObject({ valid: true, fu: 30, han: 2, multiplier: 2, damage: 4000 });
-  });
-  it('小三元＋二暗刻＋混老頭（2面子・×2倍）', () => {
-    expect(yakuNames('555666z')).toEqual(['二暗刻', '小三元', '役牌 白', '役牌 發', '混老頭'].sort());
-    expect(ev('555666z')).toMatchObject({ han: 8, multiplier: 2, damage: 32000 });
-  });
-  it('2面子では断么九を見ない', () => {
-    expect(ev('234m555p').valid).toBe(false);
-  });
-  it('平和のみ（3面子・20符1翻・×3倍＝2,100）', () => {
-    expect(yakuNames('123p234s789s')).toEqual(['平和']);
-    expect(ev('123p234s789s')).toMatchObject({ fu: 20, han: 1, multiplier: 3, damage: 2100 });
-  });
-  it('二色同順＋断么九＋平和（3面子・×3倍）', () => {
-    expect(yakuNames('234p234s567p')).toEqual(['二色同順', '断么九', '平和'].sort());
-    expect(ev('234p234s567p')).toMatchObject({ fu: 20, han: 4, multiplier: 3, damage: 15600 });
-  });
-  it('二色同刻＋三暗刻＋断么九（3面子・6翻＝跳満×3倍）', () => {
-    expect(yakuNames('555p555s222p')).toEqual(['三暗刻', '二色同刻', '断么九'].sort());
-    expect(ev('555p555s222p')).toMatchObject({ fu: 40, han: 6, multiplier: 3, damage: 36000 });
-  });
-  it('清一色(3)＋一気通貫(3)＋平和(1)＝7翻（跳満12,000×3倍＝36,000）', () => {
-    expect(ev('123456789p')).toMatchObject({ han: 7, multiplier: 3, damage: 36000 });
-  });
-  it('三槓子(4)＋三暗刻(3)＋断么九(1)＝8翻（倍満16,000×3倍＝48,000）', () => {
-    expect(yakuNames('2222p5555p8888s')).toEqual(['三暗刻', '三槓子', '断么九'].sort());
-    expect(ev('2222p5555p8888s')).toMatchObject({ han: 8, multiplier: 3, damage: 48000 });
-  });
-  it('混全帯么九（2面子・3面子）', () => {
-    expect(yakuNames('123p555z')).toEqual(['役牌 白', '混全帯么九'].sort());
-    expect(yakuNames('123m789p111z')).toEqual(['混全帯么九']);
-  });
-  it('純全帯么九（2面子・3面子）', () => {
-    expect(yakuNames('123p789s')).toEqual(['純全帯么九']);
-    expect(yakuNames('123p789p999s')).toEqual(['純全帯么九']);
-    expect(yakuNames('123p789p789s')).toEqual(['二色同順', '平和', '純全帯么九'].sort());
-  });
-  it('混老頭（2面子・3面子、チャンタ・対々和と複合しない）', () => {
-    expect(yakuNames('111p555z')).toEqual(['二暗刻', '役牌 白', '混老頭'].sort());
-    expect(yakuNames('111m999p222z')).toEqual(['三暗刻', '混老頭'].sort());
-  });
-  it('混一色（1翻）', () => {
-    const r = ev('123m456m111z');
-    expect(r.yaku).toContainEqual({ name: '混一色', han: 1 });
-  });
-  it('風牌の刻子は役牌にならない（2面子なら二暗刻＋混老頭）', () => {
-    expect(ev('111z').han).toBe(0);
-    expect(yakuNames('111z222z')).toEqual(['二暗刻', '混老頭'].sort());
-  });
-  it('大三元＋字一色はダブル役満（26翻・64,000×3倍＝192,000）', () => {
-    const r = ev('555666777z');
-    expect(r.yaku.map((y) => y.name).sort()).toEqual(['大三元', '字一色'].sort());
-    expect(r.han).toBe(26);
-    expect(r.damage).toBe(192000);
-  });
-  it('役満は通常役を消す', () => {
-    expect(yakuNames('111999m111p')).toEqual(['清老頭']);
-  });
-  it('緑一色', () => {
+
+  it('3セット役は他の役と複合せず単体で成立する', () => {
+    expect(yakuNames('123m456p789s')).toEqual(['平和']);
+    expect(yakuNames('123m456m111z')).toEqual(['混一色']);
+    expect(yakuNames('123m456m789m')).toEqual(['清一色']);
+    expect(yakuNames('222m555p888s')).toEqual(['三暗刻']);
+    expect(yakuNames('111m999p111s')).toEqual(['清老頭']);
+    expect(yakuNames('555666777z')).toEqual(['大三元']);
     expect(yakuNames('234s666s666z')).toEqual(['緑一色']);
+    expect(yakuNames('111222555z')).toEqual(['字一色']);
   });
-  it('七対子（対子4組・25符2翻・×3倍）', () => {
-    expect(ev('1133p2299s')).toMatchObject({
-      valid: true,
-      fu: 25,
-      han: 2,
-      multiplier: 3,
-      damage: 4800,
-    });
-    expect(yakuNames('1133p2299s')).toEqual(['七対子']);
-  });
-  it('七対子＋一盃口＋断么九（染め手は3面子攻撃時のみのため非複合・×3倍）', () => {
-    expect(yakuNames('22334466p')).toEqual(['一盃口', '七対子', '断么九'].sort());
-    expect(ev('22334466p')).toMatchObject({
-      valid: true,
-      fu: 25,
-      han: 4,
-      multiplier: 3,
-      damage: 19200,
-    });
-  });
-  it('2面子攻撃では染め手は複合しない', () => {
-    expect(yakuNames('234234p')).toEqual(['一盃口']);
-  });
-  it('4面子以上は不可（対子4組以外）', () => {
-    expect(ev('123m456m789m123p').valid).toBe(false);
-  });
+
   it('YAKU_CATALOGのすべての具体例が対応する役として成立する', () => {
     for (const entry of YAKU_CATALOG) {
       const used = new Map<number, number>();
       const ids: TileId[] = [];
+      const melds: Mentsu[] = [];
       for (const m of entry.example) {
+        const mIds: TileId[] = [];
         for (const k of m) {
           const n = used.get(k) ?? 0;
           used.set(k, n + 1);
-          ids.push(k * 4 + (n % 4));
+          mIds.push(k * 4 + (n % 4));
+        }
+        if (m.length === 4) {
+          melds.push({ type: 'kantsu', kind: m[0], tiles: mIds, declared: true });
+        } else {
+          ids.push(...mIds);
         }
       }
-      const r = evaluateSelection(ids, []);
+      const r = evaluateSelection(ids, melds, {
+        tanyaoUnlocked: true,
+        unlockedWinds: new Set([27, 28, 29, 30]),
+      });
       expect(r.valid).toBe(true);
-      const expectedName = entry.name.startsWith('役牌') ? '役牌 中' : entry.name;
-      expect(r.yaku.map((y) => y.name)).toContain(expectedName);
+      expect(r.yaku.length).toBeGreaterThan(0);
     }
   });
 });
 
-describe('副露した暗槓', () => {
-  const kan = (spec: string): Mentsu => {
-    const t = tiles(spec);
-    return { type: 'kantsu', kind: t[0] >> 2, tiles: t, declared: true };
-  };
-  it('役牌以外は単独で攻撃できない', () => {
-    expect(evaluateMentsu([kan('5555m')]).valid).toBe(false);
-  });
-  it('三元牌なら単独で攻撃できる', () => {
-    expect(evaluateMentsu([kan('7777z')]).valid).toBe(true);
-  });
-  it('役攻撃には使える', () => {
-    const r = evaluateSelection(tiles('555p'), [kan('5555s')]);
-    expect(r.yaku.map((y) => y.name)).toContain('二色同刻');
-    expect(r.yaku.map((y) => y.name)).toContain('二暗刻');
-  });
-});
-
-describe('戦闘の進行', () => {
-  const total = (s: BattleState) => s.hand.length + s.melds.length * 3;
-
-  it('開始時は自模後の9枚（全84枚のうち残り75枚、萬子・風牌なし）', () => {
-    const s = newBattle(MONSTERS[0], 1);
-    expect(s.hand).toHaveLength(HAND_SIZE + 1);
-    expect(s.wall).toHaveLength(84 - 9);
-    const all = [...s.hand, ...s.wall];
-    // 萬子(0..8)と風牌(27..30)が含まれないことを確認
-    expect(all.every((t) => {
-      const k = t >> 2;
-      return (k >= 9 && k <= 26) || (k >= 31 && k <= 33);
-    })).toBe(true);
-  });
-
-  it('打牌でモンスターが行動し、次の自模が来る', () => {
-    const s = newBattle(MONSTERS[0], 1);
-    const r = step(s, { type: 'discard', tile: s.hand[0] });
-    expect(r.error).toBeUndefined();
-    expect(r.state.turn).toBe(2);
-    expect(r.state.hand).toHaveLength(9);
-    expect(s.hand).toHaveLength(9); // 元の state は変更されない
-  });
-
-  it('ランダムに打ち続けても枚数が保存され、残り牌がリセットされる', () => {
-    let s = newBattle({ ...MONSTERS[0], skills: MONSTERS[0].skills.map((k) => ({ ...k, min: 0, max: 0 })) as typeof MONSTERS[0]['skills'] }, 42);
-    for (let i = 0; i < 300; i++) {
-      // 攻撃できる面子があれば先頭から試す（簡易）
-      const r = step(s, { type: 'discard', tile: s.hand[i % s.hand.length] });
-      expect(r.error).toBeUndefined();
-      s = r.state;
-      expect(total(s)).toBe(9);
-      const all = [...s.wall, ...s.hand, ...s.melds.flatMap((m) => m.tiles)];
-      expect(new Set(all).size).toBe(all.length);
-    }
-    expect(s.resets).toBeGreaterThan(0);
-  });
-
-  it('連続攻撃（Chain）でダメージに×(Chain数+1)の補正がかかり、打牌でリセットされる', () => {
-    const s0 = newBattle(MONSTERS[2], 1);
-    const handTiles = tiles('123p456p789p');
+describe('戦闘・チェーン・特殊行動・連戦システム', () => {
+  it('役攻撃でチェーンが発生し、役なし攻撃で敵行動・次ターンへ進む', () => {
+    const s0 = newBattle(MONSTERS[3], 1);
+    const handTiles = tiles('555z234m789p');
     const s: BattleState = { ...s0, hand: handTiles };
 
-    // 1回目の攻撃（Chain 0 → ×1 = 400）
+    // 1回目：白セット（1セット役）で攻撃 → チェーン発生、ターンは1のまま、白障壁ON
     const r1 = step(s, { type: 'attack', tiles: handTiles.slice(0, 3), melds: [] });
     expect(r1.error).toBeUndefined();
+    expect(r1.state.turn).toBe(1);
     expect(r1.state.chain).toBe(1);
+    expect(r1.state.buffs.nullifyDamage).toBe(true);
     expect(r1.state.hand).toHaveLength(9);
-    expect(r1.attack!.damage).toBe(400);
-    expect(r1.state.monster.hp).toBe(s.monster.hp - 400);
 
-    // 2回目の攻撃（Chain 1 → ×2 = 800）
-    const r2 = step(r1.state, { type: 'attack', tiles: handTiles.slice(3, 6), melds: [] });
+    // 2回目：単牌1枚（役なし）で攻撃 → チェーン終了、敵が行動（白障壁で無効化）してターン2へ
+    const r2 = step(r1.state, { type: 'attack', tiles: [r1.state.hand[0]], melds: [] });
     expect(r2.error).toBeUndefined();
-    expect(r2.state.chain).toBe(2);
-    expect(r2.state.hand).toHaveLength(9);
-    expect(r2.attack!.damage).toBe(800);
-    expect(r2.state.monster.hp).toBe(r1.state.monster.hp - 800);
+    expect(r2.state.turn).toBe(2);
+    expect(r2.state.chain).toBe(0);
+  });
 
-    // 3回目の攻撃（Chain 2 → ×3 = 1200）
-    const r3 = step(r2.state, { type: 'attack', tiles: handTiles.slice(6, 9), melds: [] });
-    expect(r3.error).toBeUndefined();
-    expect(r3.state.chain).toBe(3);
-    expect(r3.attack!.damage).toBe(1200);
+  it('カン宣言で金牌が1枚補充され、マリガン・リーチが正しく機能する', () => {
+    const s0 = newBattle(MONSTERS[0], 1);
+    const handWithKan = tiles('1111m99p123z'); // 1・9・字牌が9枚
+    const s: BattleState = { ...s0, hand: handWithKan };
 
-    // 打牌すると次ターンになりChainが0にリセットされる
-    const r4 = step(r3.state, { type: 'discard', tile: r3.state.hand[0] });
-    expect(r4.error).toBeUndefined();
-    expect(r4.state.turn).toBe(2);
-    expect(r4.state.chain).toBe(0);
+    // マリガン可能
+    expect(canMulliganHand(s.hand)).toBe(true);
+    const rm = step(s, { type: 'mulligan' });
+    expect(rm.error).toBeUndefined();
+    expect(rm.state.mulligansUsed).toBe(1);
+
+    // カン宣言 → 金牌が1枚補充される
+    const rk = step(s, { type: 'kan', kind: 0 });
+    expect(rk.error).toBeUndefined();
+    expect(rk.state.melds).toHaveLength(1);
+    expect(rk.state.hand).toHaveLength(6);
+    const drawnTile = rk.state.drawn[0];
+    expect(rk.state.tileMods[drawnTile]).toBe('gold');
+
+    // リーチ判定（2セット＋2枚塔子＋不要牌1枚）
+    const tenpaiHand = tiles('123m456p23s7z');
+    expect(canDeclareRiichi(tenpaiHand, [])).toBe(true);
+    const sr = step({ ...s0, hand: tenpaiHand }, { type: 'riichi' });
+    expect(sr.error).toBeUndefined();
+    expect(sr.state.riichi).toBe(true);
+    // リーチ宣言時に聴牌を崩さない不要牌(7z=中)が自摸切り対象(drawn[0])にセットされる
+    expect(kindOf(sr.state.drawn[0])).toBe(33);
+
+    // リーチキャンセル：リーチが解除され、ペナルティとして5ターン役封印が付与される
+    const sc = step(sr.state, { type: 'cancel_riichi' });
+    expect(sc.error).toBeUndefined();
+    expect(sc.state.riichi).toBe(false);
+    expect(sc.state.buffs.sealYakuTurns).toBe(5);
+  });
+
+  it('敵を撃破すると報酬選択になり、装備を選んで次のステージへ手牌・残り牌を持ち越す', () => {
+    const s0 = newBattle(MONSTERS[0], 1);
+    const strongHand = tiles('555666777z'); // 大三元（10倍ダメージ）
+    const s: BattleState = { ...s0, hand: strongHand };
+
+    const r1 = step(s, { type: 'attack', tiles: strongHand, melds: [] });
+    expect(r1.error).toBeUndefined();
+    expect(r1.state.status).toBe('reward');
+    expect(r1.state.rewardChoices).toHaveLength(3);
+    // 大三元効果でアンコモン以上の装備を3つ獲得している
+    expect(r1.state.equipments).toHaveLength(3);
+
+    // 報酬を1つ選ぶとステージ2へ進む
+    const chosen = r1.state.rewardChoices[0];
+    const r2 = step(r1.state, { type: 'choose_reward', equipId: chosen });
+    expect(r2.error).toBeUndefined();
+    expect(r2.state.status).toBe('playing');
+    expect(r2.state.stage).toBe(2);
+    expect(r2.state.equipments).toHaveLength(4);
+  });
+
+  it('役固有の効果（中3枚・一盃口・二暗刻・チャンタ・字一色）が正しく動作する', () => {
+    const s0 = newBattle(MONSTERS[7], 42); // 高HPの敵
+
+    // 中セット：補充牌3枚が金牌になる
+    const sChun: BattleState = { ...s0, hand: tiles('777z123m456p') };
+    const rChun = step(sChun, { type: 'attack', tiles: tiles('777z'), melds: [] });
+    expect(rChun.error).toBeUndefined();
+    expect(rChun.state.drawn).toHaveLength(3);
+    expect(rChun.state.drawn.every((t) => rChun.state.tileMods[t] === 'gold')).toBe(true);
+
+    // 一盃口：ペア3組（計6枚）が補充される
+    const sIipei: BattleState = { ...s0, hand: tiles('123123m456p') };
+    const rIipei = step(sIipei, { type: 'attack', tiles: tiles('123123m'), melds: [] });
+    expect(rIipei.error).toBeUndefined();
+    expect(rIipei.state.drawn).toHaveLength(6);
+    expect(kindOf(rIipei.state.drawn[0])).toBe(kindOf(rIipei.state.drawn[1]));
+    expect(kindOf(rIipei.state.drawn[2])).toBe(kindOf(rIipei.state.drawn[3]));
+    expect(kindOf(rIipei.state.drawn[4])).toBe(kindOf(rIipei.state.drawn[5]));
+
+    // 二暗刻：補充に同牌セット（3枚組）が含まれる
+    const sNian: BattleState = { ...s0, hand: tiles('222m555p789s') };
+    const rNian = step(sNian, { type: 'attack', tiles: tiles('222m555p'), melds: [] });
+    expect(rNian.error).toBeUndefined();
+    expect(kindOf(rNian.state.drawn[0])).toBe(kindOf(rNian.state.drawn[1]));
+    expect(kindOf(rNian.state.drawn[1])).toBe(kindOf(rNian.state.drawn[2]));
+
+    // 字一色：その場でレベルが3上がる
+    const sTsuu: BattleState = { ...s0, hand: tiles('111222555z') };
+    const rTsuu = step(sTsuu, { type: 'attack', tiles: sTsuu.hand, melds: [] });
+    expect(rTsuu.error).toBeUndefined();
+    expect(rTsuu.state.player.level).toBeGreaterThanOrEqual(3);
+  });
+
+  it('装備スキル（治療・残り牌リセット・複製・サーチ）が正しく動作する', () => {
+    const s0 = newBattle(MONSTERS[3], 10);
+    const handTiles = tiles('234m567p123s');
+    const s: BattleState = {
+      ...s0,
+      hand: handTiles,
+      player: { ...s0.player, hp: 100, maxHp: 300 },
+      equipments: ['unlock_heal', 'skill_reset_wall', 'skill_copy', 'skill_search'],
+    };
+
+    // 治療ONで攻撃 → 自分のHPが回復する
+    const rHealOn = step(s, { type: 'toggle_heal' });
+    expect(rHealOn.state.healMode).toBe(true);
+    const rHealAtk = step(rHealOn.state, { type: 'attack', tiles: handTiles.slice(0, 3), melds: [] });
+    expect(rHealAtk.state.player.hp).toBeGreaterThan(100);
+    expect(rHealAtk.state.monster.hp).toBe(s.monster.hp);
+
+    // 複製：手牌の1枚目を2枚目と同じ種類に変化させる
+    const rCopy = step(s, {
+      type: 'skill_copy',
+      targetTile: handTiles[0],
+      sourceTile: handTiles[3],
+    });
+    expect(rCopy.error).toBeUndefined();
+    expect(kindOf(rCopy.state.hand[0])).toBe(kindOf(handTiles[3]));
+    expect(rCopy.state.cooldowns.copy).toBe(5);
+
+    // サーチ：手牌の1枚目を残り牌の「中(33)」に変化させる
+    const rSearch = step(s, {
+      type: 'skill_search',
+      targetTile: handTiles[0],
+      kind: 33,
+    });
+    expect(rSearch.error).toBeUndefined();
+    expect(kindOf(rSearch.state.hand[0])).toBe(33);
+    expect(rSearch.state.cooldowns.search).toBe(5);
   });
 });

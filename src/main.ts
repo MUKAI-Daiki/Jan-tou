@@ -1,8 +1,15 @@
 import './ui/style.css';
-import { Action, BattleState, newBattle, step } from './core/battle';
+import { Action, BattleState, LogEntry, buildScoreContext, newBattle, step } from './core/battle';
+import {
+  canDeclareRiichi,
+  canMulliganHand,
+  findRiichiDiscards,
+  hasThreeSets,
+  kanCandidates,
+} from './core/mentsu';
 import { randomSeed } from './core/rng';
-import { damageRank, evaluateSelection } from './core/score';
-import { kindName, kindOf } from './core/tile';
+import { evaluateSelection } from './core/score';
+import { kindOf } from './core/tile';
 import { MONSTERS, MonsterDef } from './data/monsters';
 import { Preview, UiState, renderBattle, renderTitle } from './ui/render';
 
@@ -10,55 +17,228 @@ const app = document.getElementById('app')!;
 
 let screen: 'title' | 'battle' = 'title';
 let state: BattleState | null = null;
-let currentMonster: MonsterDef | null = null;
 let pendingEvents: BattleState['events'] = [];
-const ui: UiState = { selected: new Set(), selectedMelds: new Set(), message: '' };
+let autoRiichiTimer: number | null = null;
+let typewriterTimer: number | null = null;
+let logQueue: LogEntry[] = [];
+
+const ui: UiState = {
+  selected: new Set(),
+  selectedMelds: new Set(),
+  selectionOrder: [],
+  searchMode: false,
+  logOpen: false,
+  liveLogText: '',
+  liveLogSide: 'system',
+  message: '',
+};
+
+function stopAutoRiichiTimer() {
+  if (autoRiichiTimer !== null) {
+    window.clearTimeout(autoRiichiTimer);
+    autoRiichiTimer = null;
+  }
+}
+
+function stopTypewriter() {
+  if (typewriterTimer !== null) {
+    window.clearTimeout(typewriterTimer);
+    typewriterTimer = null;
+  }
+}
+
+function enqueueLogs(entries: LogEntry[]) {
+  if (entries.length === 0) return;
+  stopTypewriter();
+  logQueue = [...entries];
+  playNextLogInQueue();
+}
+
+function playNextLogInQueue() {
+  if (logQueue.length === 0) return;
+  const entry = logQueue.shift()!;
+  ui.liveLogSide = entry.side;
+  ui.liveLogText = '';
+
+  const chars = [...entry.text];
+  let idx = 0;
+
+  // アイコンと色クラスを反映
+  const sectionEl = document.querySelector<HTMLElement>('.live-log-section');
+  if (sectionEl) {
+    sectionEl.className = `live-log-section side-${ui.liveLogSide}`;
+  }
+  const iconEl = document.querySelector<HTMLElement>('.live-icon');
+  if (iconEl) {
+    iconEl.textContent =
+      ui.liveLogSide === 'monster' ? '👾' : ui.liveLogSide === 'player' ? '⚔️' : '📢';
+  }
+
+  const tick = () => {
+    idx++;
+    ui.liveLogText = chars.slice(0, idx).join('');
+    const el = document.getElementById('live-log-text');
+    if (el) el.textContent = ui.liveLogText;
+
+    if (idx < chars.length) {
+      typewriterTimer = window.setTimeout(tick, 22);
+    } else if (logQueue.length > 0) {
+      typewriterTimer = window.setTimeout(playNextLogInQueue, 340);
+    } else {
+      typewriterTimer = null;
+    }
+  };
+  tick();
+}
 
 function clearSelection() {
   ui.selected.clear();
   ui.selectedMelds.clear();
+  ui.selectionOrder = [];
+  ui.searchMode = false;
+}
+
+function selectAllPlayableTiles(s: BattleState) {
+  clearSelection();
+  for (const t of s.hand) {
+    if (!(s.sealedTiles[t] > 0)) {
+      ui.selected.add(t);
+      ui.selectionOrder.push(t);
+    }
+  }
+  for (let i = 0; i < s.melds.length; i++) {
+    ui.selectedMelds.add(i);
+  }
+}
+
+function checkAndScheduleAutoRiichi() {
+  stopAutoRiichiTimer();
+  if (!state || screen !== 'battle' || state.status !== 'playing' || !state.riichi) {
+    return;
+  }
+
+  // 3セットが揃った場合はオート自摸切りを止め、全選択してプレイヤーに攻撃を促す
+  if (hasThreeSets(state.hand, state.melds)) {
+    if (ui.selected.size === 0 && ui.selectedMelds.size === 0) {
+      selectAllPlayableTiles(state);
+      render();
+    }
+    return;
+  }
+
+  // まだ3セットが揃っていない場合はオートで自摸切りを進める
+  autoRiichiTimer = window.setTimeout(() => {
+    autoRiichiTimer = null;
+    if (!state || state.status !== 'playing' || !state.riichi) return;
+    if (hasThreeSets(state.hand, state.melds)) return;
+
+    const discards = findRiichiDiscards(state.hand, state.melds);
+    const drawnTile = state.drawn[0];
+    const targetTile =
+      drawnTile !== undefined && state.hand.includes(drawnTile)
+        ? drawnTile
+        : discards[0] ?? state.hand[state.hand.length - 1];
+
+    if (targetTile !== undefined) {
+      dispatch({ type: 'attack', tiles: [targetTile], melds: [] });
+    }
+  }, 950);
 }
 
 function computePreview(s: BattleState): Preview {
   const tiles = [...ui.selected];
   const meldIdx = [...ui.selectedMelds];
-  const none: Preview = { text: '', canAttack: false, canDiscard: false, canKan: false };
+  const canRiichi = !s.riichi && canDeclareRiichi(s.hand, s.melds);
+  const canMulligan = s.turn === 1 && s.chain === 0 && s.mulligansUsed < 2 && canMulliganHand(s.hand);
+
+  const kCands = kanCandidates(s.hand);
+  const selectedKinds = new Set(tiles.map(kindOf));
+  const canKan =
+    !s.riichi &&
+    meldIdx.length === 0 &&
+    ((selectedKinds.size === 1 && kCands.includes([...selectedKinds][0])) ||
+      (tiles.length === 0 && kCands.length > 0));
+
+  const none: Preview = {
+    text: '',
+    canAttack: false,
+    canKan,
+    canRiichi,
+    canMulligan,
+  };
 
   if (s.status !== 'playing') return none;
   if (tiles.length === 0 && meldIdx.length === 0) {
-    return { ...none, text: '牌を選んでください（1枚 → 打牌 ／ 面子 → 攻撃）' };
+    if (s.riichi) {
+      const completed = hasThreeSets(s.hand, s.melds);
+      return {
+        ...none,
+        text: completed
+          ? '🎉【リーチ完成】3セットが揃いました！全選択して「攻撃」で威力2倍＆チェーン発動！'
+          : '🔄【リーチ中】3セットが揃うまで自動で自摸切りを進めています…（「リーチキャンセル」で中断可）',
+      };
+    }
+    return {
+      ...none,
+      text: '任意の枚数の牌を選んで「攻撃」してください（セット・役が含まれるとボーナス＆チェーン発生！）',
+    };
   }
 
-  const canDiscard = tiles.length === 1 && meldIdx.length === 0;
-  const kinds = new Set(tiles.map(kindOf));
-  const canKan =
-    meldIdx.length === 0 &&
-    kinds.size === 1 &&
-    (tiles.length === 1 || tiles.length === 4) &&
-    s.hand.filter((t) => kindOf(t) === kindOf(tiles[0])).length >= 4;
-
+  const ctx = buildScoreContext(s);
   const ev = evaluateSelection(
     tiles,
     meldIdx.map((i) => s.melds[i]),
+    ctx,
   );
-  const canAttack = ev.valid;
 
-  let text: string;
-  if (ev.valid) {
-    const yaku = ev.yaku.length > 0 ? ev.yaku.map((y) => `${y.name}(${y.yakuman ? '役満' : y.han})`).join(' ') : '役なし';
-    const rank = damageRank(ev.fu, ev.han);
-    const rankText = rank ? `${rank} ` : '';
-    const chainMult = s.chain + 1;
-    const totalDamage = ev.damage * chainMult;
-    const mentsuText = ev.multiplier > 1 ? ` ×${ev.multiplier}(${ev.mentsu.length === 4 ? '七対子' : `${ev.mentsu.length}面子`})` : '';
-    const chainText = s.chain > 0 ? ` ×${chainMult}(Chain ${s.chain})` : '';
-    text = `${yaku} ／ ${ev.fu}符 ${ev.han}翻${mentsuText}${chainText} → ${rankText}${totalDamage.toLocaleString()} ダメージ`;
-  } else if (canDiscard) {
-    text = `打牌：${kindName(kindOf(tiles[0]))}`;
-  } else {
-    text = ev.reason ?? '';
+  if (!ev.valid) {
+    return {
+      ...none,
+      text: ev.reason ?? '攻撃できません',
+      ev,
+    };
   }
-  return { text, canAttack, canDiscard, canKan, ev };
+
+  const parts: string[] = [];
+  const kantsuCount = ev.decomp.sets.filter((m) => m.type === 'kantsu').length;
+  const koutsuCount = ev.decomp.sets.filter((m) => m.type === 'koutsu').length;
+  const shuntsuCount = ev.decomp.sets.filter((m) => m.type === 'shuntsu').length;
+  const pairCount = ev.decomp.pairs.length;
+  if (kantsuCount > 0) parts.push(`カン×${kantsuCount}(+${kantsuCount * 30}/基礎+50%)`);
+  if (koutsuCount > 0) parts.push(`同牌セット×${koutsuCount}(+${koutsuCount * 20})`);
+  if (shuntsuCount > 0) parts.push(`並びセット×${shuntsuCount}(+${shuntsuCount * 10})`);
+  if (pairCount > 0) parts.push(`ペア×${pairCount}(+${pairCount * 5})`);
+  if (ev.decomp.singles.length > 0) parts.push(`単牌×${ev.decomp.singles.length}`);
+
+  const yakuStr =
+    ev.yaku.length > 0
+      ? ev.yaku.map((y) => `【${y.name}：${y.effectText}】`).join(' ')
+      : ev.isRiichiComplete
+        ? '【リーチ完成：威力2倍】'
+        : '役なし';
+
+  const actionWord = s.healMode ? '回復' : 'ダメージ';
+  const chainNotice =
+    ev.gainedChains > 0
+      ? ` ／ ⚡チェーン+${ev.gainedChains}発生！`
+      : s.extraChains > 0
+        ? ` ／ ⚡ストックにより連続行動可`
+        : '';
+
+  const text = `${yakuStr} → ${ev.damage.toLocaleString()} ${actionWord}${chainNotice}`;
+  const goldNote = ev.goldCount > 0 ? ` ｜ 金/赤牌×${ev.goldCount}(+${ev.goldCount * 50}%)` : '';
+  const rainbowNote = ev.rainbowCount > 0 ? ` ｜ 虹牌×${ev.rainbowCount}` : '';
+  const subText = `構成: ${parts.join('・')} ｜ 牌攻撃力合計 ${ev.tilePower} + ボーナス ${ev.setBonus}${goldNote}${rainbowNote}`;
+
+  return {
+    text,
+    subText,
+    canAttack: true,
+    canKan,
+    canRiichi,
+    canMulligan,
+    ev,
+  };
 }
 
 function render() {
@@ -79,25 +259,42 @@ function render() {
 
 function dispatch(action: Action) {
   if (!state) return;
+  stopAutoRiichiTimer();
+  const prevLogLen = state.log.length;
   const r = step(state, action);
   if (r.error) {
     ui.message = r.error;
+    render();
   } else {
     state = r.state;
     pendingEvents = r.state.events;
     ui.message = '';
     clearSelection();
+
+    // リーチ中に3セットが揃ったら自動で全選択する
+    if (state.status === 'playing' && state.riichi && hasThreeSets(state.hand, state.melds)) {
+      selectAllPlayableTiles(state);
+    }
+
+    const newLogs = state.log.slice(prevLogLen);
+    render();
+    if (newLogs.length > 0) {
+      enqueueLogs(newLogs);
+    }
+    checkAndScheduleAutoRiichi();
   }
-  render();
 }
 
 function startBattle(def: MonsterDef) {
-  currentMonster = def;
+  stopAutoRiichiTimer();
+  stopTypewriter();
   state = newBattle(def, randomSeed());
   screen = 'battle';
   clearSelection();
   ui.message = '';
+  ui.logOpen = false;
   render();
+  enqueueLogs(state.log);
 }
 
 app.addEventListener('click', (e) => {
@@ -112,6 +309,30 @@ app.addEventListener('click', (e) => {
     if (actionEl.classList.contains('overlay') && target.closest('[data-stop]')) return;
     ui.showYakuModal = false;
     render();
+    return;
+  }
+  if (actionEl?.dataset.action === 'toggle-log') {
+    ui.logOpen = !ui.logOpen;
+    render();
+    return;
+  }
+
+  const rewardEl = target.closest<HTMLElement>('[data-reward]');
+  if (rewardEl?.dataset.reward) {
+    dispatch({ type: 'choose_reward', equipId: rewardEl.dataset.reward });
+    return;
+  }
+
+  const searchKindEl = target.closest<HTMLElement>('[data-search-kind]');
+  if (searchKindEl?.dataset.searchKind !== undefined && state) {
+    const [targetTile] = [...ui.selected];
+    if (targetTile !== undefined) {
+      dispatch({
+        type: 'skill_search',
+        targetTile,
+        kind: Number(searchKindEl.dataset.searchKind),
+      });
+    }
     return;
   }
 
@@ -130,12 +351,19 @@ app.addEventListener('click', (e) => {
   if (el.dataset.tile !== undefined) {
     if (state.status !== 'playing') return;
     const t = Number(el.dataset.tile);
-    if (ui.selected.has(t)) ui.selected.delete(t);
-    else ui.selected.add(t);
+    if (ui.selected.has(t)) {
+      ui.selected.delete(t);
+      ui.selectionOrder = ui.selectionOrder.filter((id) => id !== t);
+    } else {
+      ui.selected.add(t);
+      ui.selectionOrder.push(t);
+    }
+    if (ui.selected.size !== 1) ui.searchMode = false;
     ui.message = '';
     render();
     return;
   }
+
   if (el.dataset.meld !== undefined) {
     if (state.status !== 'playing') return;
     const i = Number(el.dataset.meld);
@@ -150,14 +378,50 @@ app.addEventListener('click', (e) => {
     case 'attack':
       dispatch({ type: 'attack', tiles: [...ui.selected], melds: [...ui.selectedMelds] });
       break;
-    case 'discard': {
-      const [t] = [...ui.selected];
-      if (t !== undefined) dispatch({ type: 'discard', tile: t });
+    case 'kan': {
+      const tiles = [...ui.selected];
+      const cands = kanCandidates(state.hand);
+      const kind = tiles.length > 0 ? kindOf(tiles[0]) : cands[0];
+      if (kind !== undefined) dispatch({ type: 'kan', kind });
       break;
     }
-    case 'kan': {
-      const [t] = [...ui.selected];
-      if (t !== undefined) dispatch({ type: 'kan', kind: kindOf(t) });
+    case 'riichi': {
+      const [firstSelected] = [...ui.selected];
+      dispatch({ type: 'riichi', discardTile: firstSelected });
+      break;
+    }
+    case 'cancel-riichi':
+      dispatch({ type: 'cancel_riichi' });
+      break;
+    case 'mulligan':
+      dispatch({ type: 'mulligan' });
+      break;
+    case 'toggle-heal':
+      dispatch({ type: 'toggle_heal' });
+      break;
+    case 'skill-reset-wall':
+      dispatch({ type: 'skill_reset_wall' });
+      break;
+    case 'skill-copy': {
+      if (ui.selectionOrder.length === 2) {
+        dispatch({
+          type: 'skill_copy',
+          targetTile: ui.selectionOrder[0],
+          sourceTile: ui.selectionOrder[1],
+        });
+      }
+      break;
+    }
+    case 'skill-search': {
+      ui.searchMode = !ui.searchMode;
+      ui.message = ui.searchMode ? '上部の「残り牌」から手牌と入れ替えたい牌をクリックしてください' : '';
+      render();
+      break;
+    }
+    case 'select-all': {
+      selectAllPlayableTiles(state);
+      ui.message = '';
+      render();
       break;
     }
     case 'clear':
@@ -166,9 +430,11 @@ app.addEventListener('click', (e) => {
       render();
       break;
     case 'retry':
-      if (currentMonster) startBattle(currentMonster);
+      startBattle(MONSTERS[0]);
       break;
     case 'title':
+      stopAutoRiichiTimer();
+      stopTypewriter();
       screen = 'title';
       state = null;
       render();
