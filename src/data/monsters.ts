@@ -34,7 +34,7 @@ export const ENEMY_SKILLS: Record<EnemySkillId, EnemySkillDef> = {
   normal: { id: 'normal', name: '通常攻撃', category: 'normal', desc: '標準的な攻撃を行う' },
   // 基本技
   critical: { id: 'critical', name: 'クリティカル', category: 'basic', desc: 'ダメージ2倍の痛恨の一撃！' },
-  seal_yaku: { id: 'seal_yaku', name: '封印', category: 'basic', desc: '3ターンの間、役の効果発動を無効化！' },
+  seal_yaku: { id: 'seal_yaku', name: '封印', category: 'basic', desc: '1ターンの間、役の効果発動を無効化！' },
   atk_down: { id: 'atk_down', name: '攻撃力ダウン', category: 'basic', desc: '3ターンの間、プレイヤーの攻撃力合計-10！' },
   charge: { id: 'charge', name: 'ためる', category: 'basic', desc: '力を溜めた！次のターンのダメージが3倍に！' },
   defend: { id: 'defend', name: '防御', category: 'basic', desc: '2ターンの間、敵へのダメージが半減！' },

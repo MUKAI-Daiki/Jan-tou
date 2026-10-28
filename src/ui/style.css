@@ -245,10 +245,17 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   pointer-events: none;
   animation: popup 1.2s ease-out forwards;
   text-shadow: 0 0 4px #000;
-  z-index: 5;
+  z-index: 10;
 }
 .dmg-monster { color: var(--accent); }
-.dmg-player { color: var(--danger); }
+.dmg-player {
+  color: #ff2e2e;
+  font-size: 34px;
+  font-weight: 900;
+  right: 28px;
+  top: -6px;
+  text-shadow: 0 0 6px #000, 0 2px 8px rgba(0, 0, 0, 0.95), 0 0 14px rgba(255, 46, 46, 0.7);
+}
 .heal-popup { color: var(--ok); }
 @keyframes popup {
   0% { opacity: 0; transform: translateY(10px) scale(0.8); }
@@ -357,7 +364,12 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 .status-line .ready { color: var(--ok); }
 .status-line .chain-active { color: var(--accent); font-weight: bold; font-size: 14px; }
 .status-line .chain-stock { color: #7dd3fc; font-weight: bold; }
-.status-line .status-right { margin-left: auto; }
+.status-line .status-right {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
 
 .hand-row {
   display: flex;
@@ -394,6 +406,7 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 .btn-riichi { background: #f59e0b; color: #1a1a1a; }
 .btn-cancel-riichi { background: var(--danger); color: #fff; }
 .btn-mulligan { background: #c084fc; color: #1a1a1a; }
+.btn-wall { background: #1e3a38; color: #7dd3fc; border: 1px solid #38bdf8; }
 .btn-yaku { background: #264838; color: var(--accent); border: 1px solid var(--accent); }
 .btn-clear { background: transparent; color: var(--muted); border: 1px solid var(--muted); }
 
@@ -701,10 +714,48 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   gap: 2px;
 }
 
+/* ---------- 残り牌モーダル ---------- */
+.wall-modal {
+  background: #17241e;
+  border: 2px solid #38bdf8;
+  border-radius: 14px;
+  padding: 20px 24px;
+  max-width: 580px;
+  width: 94vw;
+  max-height: 86vh;
+  overflow-y: auto;
+  text-align: left;
+}
+.search-modal-banner {
+  background: rgba(242, 193, 78, 0.16);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-weight: bold;
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
 @media (max-width: 720px) {
-  :root { --tile-w: 36px; --tile-h: 52px; }
+  :root { --tile-w: 35px; --tile-h: 50px; }
+  .battle { padding: 8px; gap: 6px; }
+  .enemy, .player, .table, .live-log-section { padding: 8px 10px; }
+  .enemy-head { gap: 6px; margin-bottom: 4px; }
+  .enemy-head .mname { font-size: 16px; }
+  .live-text { font-size: 15px; min-height: 22px; }
+  .live-icon { font-size: 20px; }
+  .status-line { gap: 6px; margin-bottom: 6px; font-size: 12px; }
+  .hand-row { min-height: calc(var(--tile-h) + 12px); gap: 10px; }
+  .preview { margin-top: 6px; min-height: 28px; font-size: 13px; }
+  .actions { gap: 5px; margin-top: 6px; }
+  .actions button { padding: 7px 11px; font-size: 12.5px; }
+  .player-head { font-size: 12.5px; gap: 6px; margin-bottom: 4px; }
+  .expbar { width: 150px; height: 14px; }
+  .equip-bar { margin-top: 5px; font-size: 11px; }
   .middle { grid-template-columns: 1fr; }
   .tile .t { font-size: 16px; }
   .tile .b { font-size: 11px; }
   .s-p .t, .s-z .t { font-size: 20px; }
+  .wall-modal { padding: 14px 16px; }
 }

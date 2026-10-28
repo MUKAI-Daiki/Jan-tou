@@ -1,5 +1,13 @@
 import './ui/style.css';
-import { Action, BattleState, LogEntry, buildScoreContext, newBattle, step } from './core/battle';
+import {
+  Action,
+  BattleState,
+  LogEntry,
+  MonsterTurnStep,
+  buildScoreContext,
+  newBattle,
+  step,
+} from './core/battle';
 import {
   canDeclareRiichi,
   canMulliganHand,
@@ -16,8 +24,13 @@ import { Preview, UiState, renderBattle, renderTitle } from './ui/render';
 
 const app = document.getElementById('app')!;
 
+const PLAYER_CHAR_MS = 22;
+const MONSTER_CHAR_MS = 44; // 敵の文字送りスピードを半分（間隔2倍）に
+const ENEMY_WAIT_MS = 300; // 敵ターンの各節目の0.3秒ウェイト
+
 let screen: 'title' | 'battle' = 'title';
 let state: BattleState | null = null;
+let displayedState: BattleState | null = null;
 let pendingEvents: BattleState['events'] = [];
 let autoRiichiTimer: number | null = null;
 let typewriterTimer: number | null = null;
@@ -31,6 +44,7 @@ const ui: UiState = {
   searchMode: false,
   riichiSelectMode: false,
   combatPhase: 'idle',
+  isEnemyTurnAnimating: false,
   logOpen: false,
   liveLogText: '',
   liveLogSide: 'system',
@@ -53,6 +67,8 @@ function stopTypewriter() {
     window.clearTimeout(phaseResetTimer);
     phaseResetTimer = null;
   }
+  ui.isEnemyTurnAnimating = false;
+  displayedState = null;
 }
 
 function syncCombatPhaseDom() {
@@ -63,29 +79,7 @@ function syncCombatPhaseDom() {
   if (ui.combatPhase === 'monster') battleEl.classList.add('phase-monster');
 }
 
-function enqueueLogs(entries: LogEntry[]) {
-  if (entries.length === 0) return;
-  stopTypewriter();
-  logQueue = [...entries];
-  playNextLogInQueue();
-}
-
-function playNextLogInQueue() {
-  if (logQueue.length === 0) return;
-  const entry = logQueue.shift()!;
-  ui.liveLogSide = entry.side;
-  ui.liveLogText = '';
-  if (entry.side === 'player') {
-    ui.combatPhase = 'player';
-  } else if (entry.side === 'monster') {
-    ui.combatPhase = 'monster';
-  }
-  syncCombatPhaseDom();
-
-  const chars = [...entry.text];
-  let idx = 0;
-
-  // アイコンと色クラスを反映
+function syncLiveLogHeaderDom() {
   const sectionEl = document.querySelector<HTMLElement>('.live-log-section');
   if (sectionEl) {
     sectionEl.className = `live-log-section side-${ui.liveLogSide}`;
@@ -95,27 +89,123 @@ function playNextLogInQueue() {
     iconEl.textContent =
       ui.liveLogSide === 'monster' ? '👾' : ui.liveLogSide === 'player' ? '⚔️' : '📢';
   }
+  const textEl = document.getElementById('live-log-text');
+  if (textEl) {
+    textEl.textContent = ui.liveLogText;
+  }
+}
 
+function typeString(
+  text: string,
+  charIntervalMs: number,
+  prefix: string,
+  onDone: () => void,
+) {
+  const chars = [...text];
+  let idx = 0;
+  if (chars.length === 0) {
+    onDone();
+    return;
+  }
   const tick = () => {
     idx++;
-    ui.liveLogText = chars.slice(0, idx).join('');
+    ui.liveLogText = prefix + chars.slice(0, idx).join('');
     const el = document.getElementById('live-log-text');
     if (el) el.textContent = ui.liveLogText;
-
     if (idx < chars.length) {
-      typewriterTimer = window.setTimeout(tick, 22);
-    } else if (logQueue.length > 0) {
-      typewriterTimer = window.setTimeout(playNextLogInQueue, 340);
+      typewriterTimer = window.setTimeout(tick, charIntervalMs);
+    } else {
+      typewriterTimer = null;
+      onDone();
+    }
+  };
+  tick();
+}
+
+function enqueueLogs(entries: LogEntry[], onAllDone?: () => void) {
+  if (entries.length === 0) {
+    if (onAllDone) onAllDone();
+    return;
+  }
+  logQueue = [...entries];
+  playNextLogInQueue(onAllDone);
+}
+
+function playNextLogInQueue(onAllDone?: () => void) {
+  if (logQueue.length === 0) {
+    if (onAllDone) onAllDone();
+    return;
+  }
+  const entry = logQueue.shift()!;
+  ui.liveLogSide = entry.side;
+  ui.liveLogText = '';
+  if (entry.side === 'player') {
+    ui.combatPhase = 'player';
+  } else if (entry.side === 'monster') {
+    ui.combatPhase = 'monster';
+  }
+  syncCombatPhaseDom();
+  syncLiveLogHeaderDom();
+
+  const speed = entry.side === 'monster' ? MONSTER_CHAR_MS : PLAYER_CHAR_MS;
+  typeString(entry.text, speed, '', () => {
+    if (logQueue.length > 0) {
+      typewriterTimer = window.setTimeout(() => playNextLogInQueue(onAllDone), 260);
+    } else if (onAllDone) {
+      onAllDone();
     } else {
       typewriterTimer = null;
       phaseResetTimer = window.setTimeout(() => {
         phaseResetTimer = null;
         ui.combatPhase = 'idle';
         syncCombatPhaseDom();
-      }, 650);
+      }, 500);
     }
+  });
+}
+
+function playMonsterTurnSequence(steps: MonsterTurnStep[], onComplete: () => void) {
+  let stepIdx = 0;
+
+  const runNextMonsterStep = () => {
+    if (stepIdx >= steps.length) {
+      // 3. ターンをプレイヤーに返す前の 0.3秒ウェイト
+      typewriterTimer = window.setTimeout(() => {
+        typewriterTimer = null;
+        onComplete();
+      }, ENEMY_WAIT_MS);
+      return;
+    }
+
+    const mStep = steps[stepIdx++];
+    ui.combatPhase = 'monster';
+    ui.liveLogSide = 'monster';
+    ui.liveLogText = '';
+    syncCombatPhaseDom();
+    syncLiveLogHeaderDom();
+
+    // 1. 敵行動開始 -> メッセージ表示開始 の 0.3秒ウェイト
+    typewriterTimer = window.setTimeout(() => {
+      // 敵行動宣言メッセージを文字送り（通常の半分のスピード）
+      typeString(mStep.declareText, MONSTER_CHAR_MS, '', () => {
+        // 2. ダメージ or デバフ 表示前 の 0.3秒ウェイト
+        typewriterTimer = window.setTimeout(() => {
+          // ダメージまたはデバフの状態＆赤字ダメージポップアップをUIに反映
+          displayedState = mStep.stateAfterEffect;
+          pendingEvents = mStep.events;
+          render();
+
+          // 続けて効果テキストを文字送り（通常の半分のスピード）
+          const prefix = mStep.declareText ? `${mStep.declareText} ` : '';
+          typeString(mStep.effectText, MONSTER_CHAR_MS, prefix, () => {
+            runNextMonsterStep();
+          });
+        }, ENEMY_WAIT_MS);
+      });
+    }, ENEMY_WAIT_MS);
   };
-  tick();
+
+  runNextMonsterStep();
 }
 
 function clearSelection() {
@@ -229,14 +319,15 @@ function computePreview(s: BattleState): Preview {
         ...none,
         canConfirmRiichi: true,
         text: `🔥【リーチ捨て牌：${kindName(kindOf(discardTile))}】 → 待ち牌：${waitStr}`,
-        subText: '「この牌を切ってリーチ確定！」を押すと、選択した牌を捨ててオート自摸切りを開始します',
+        subText:
+          '「この牌を切ってリーチ確定！」を押すと、選択した牌を捨ててオート自摸切りを開始します（リーチ中は受けるダメージ半減！）',
       };
     }
     return {
       ...none,
       canConfirmRiichi: false,
       text: '🔥 リーチ宣言モード：光っている牌の中から、最初に捨てる牌を1枚クリックして選んでください',
-      subText: '捨てる牌によって待ち牌（3セット完成に必要な牌）が変わります',
+      subText: '捨てる牌によって待ち牌（3セット完成に必要な牌）が変わります（リーチ中は被ダメージ半減）',
     };
   }
 
@@ -246,8 +337,8 @@ function computePreview(s: BattleState): Preview {
       return {
         ...none,
         text: completed
-          ? '🎉【リーチ完成】3セットが揃いました！全選択して「攻撃」で威力2倍＆チェーン発動！'
-          : '🔄【リーチ中】右端の自摸牌を自動でツモ切りしています…（「リーチキャンセル」で中断可）',
+          ? '🎉【リーチ完成】3セットが揃いました！全選択して「攻撃」で威力2倍＆チェーン＆補充30%金牌化！'
+          : '🔄【リーチ中（被ダメージ半減）】右端の自摸牌を自動でツモ切りしています…（「リーチキャンセル」で中断可）',
       };
     }
     return {
@@ -260,7 +351,7 @@ function computePreview(s: BattleState): Preview {
     const t = tiles[0];
     return {
       ...none,
-      text: `🔄【リーチ自摸切り】自摸牌「${t !== undefined ? kindName(kindOf(t)) : ''}」を切って次の牌をツモります…`,
+      text: `🔄【リーチ自摸切り（被ダメージ半減）】自摸牌「${t !== undefined ? kindName(kindOf(t)) : ''}」を切って次の牌をツモります…`,
     };
   }
 
@@ -294,7 +385,7 @@ function computePreview(s: BattleState): Preview {
     ev.yaku.length > 0
       ? ev.yaku.map((y) => `【${y.name}：${y.effectText}】`).join(' ')
       : ev.isRiichiComplete
-        ? '【リーチ完成：威力2倍】'
+        ? '【リーチ完成：威力2倍＆補充30%金牌化】'
         : '役なし';
 
   const actionWord = s.healMode ? '回復' : 'ダメージ';
@@ -323,14 +414,15 @@ function computePreview(s: BattleState): Preview {
 }
 
 function render() {
-  if (screen === 'title' || !state) {
+  const activeState = displayedState ?? state;
+  if (screen === 'title' || !activeState) {
     app.innerHTML = renderTitle(ui.showYakuModal);
     return;
   }
   app.innerHTML = renderBattle({
-    state,
+    state: activeState,
     ui,
-    preview: computePreview(state),
+    preview: computePreview(activeState),
     events: pendingEvents,
   });
   pendingEvents = [];
@@ -339,8 +431,9 @@ function render() {
 }
 
 function dispatch(action: Action) {
-  if (!state) return;
+  if (!state || ui.isEnemyTurnAnimating) return;
   stopAutoRiichiTimer();
+  stopTypewriter();
   const prevLogLen = state.log.length;
   const r = step(state, action);
   if (r.error) {
@@ -348,9 +441,36 @@ function dispatch(action: Action) {
     render();
   } else {
     state = r.state;
-    pendingEvents = r.state.events;
     ui.message = '';
+    ui.showWallModal = false;
     clearSelection();
+
+    // 敵ターンが発生した場合は、プレイヤーフェーズ -> 敵ターンフェーズ（0.3秒ウェイト×3＋文字送り半速＋赤字ダメージ表示）を順再生
+    if (r.monsterTurnSteps && r.monsterTurnSteps.length > 0 && r.afterPlayerState) {
+      ui.isEnemyTurnAnimating = true;
+      displayedState = r.afterPlayerState;
+      pendingEvents = r.playerEvents ?? [];
+      render();
+
+      const pLogs = r.playerLogs ?? [];
+      enqueueLogs(pLogs, () => {
+        playMonsterTurnSequence(r.monsterTurnSteps!, () => {
+          displayedState = null;
+          ui.isEnemyTurnAnimating = false;
+          ui.combatPhase = 'idle';
+          pendingEvents = r.state.events;
+
+          if (state && state.status === 'playing' && state.riichi && hasThreeSets(state.hand, state.melds)) {
+            selectAllPlayableTiles(state);
+          }
+          render();
+          checkAndScheduleAutoRiichi();
+        });
+      });
+      return;
+    }
+
+    pendingEvents = r.state.events;
 
     // リーチ中に3セットが揃ったら自動で全選択する
     if (state.status === 'playing' && state.riichi && hasThreeSets(state.hand, state.melds)) {
@@ -375,6 +495,8 @@ function startBattle(def: MonsterDef) {
   ui.combatPhase = 'idle';
   ui.message = '';
   ui.logOpen = false;
+  ui.showWallModal = false;
+  ui.showYakuModal = false;
   render();
   enqueueLogs(state.log);
 }
@@ -390,6 +512,18 @@ app.addEventListener('click', (e) => {
   if (actionEl?.dataset.action === 'close-yaku') {
     if (actionEl.classList.contains('overlay') && target.closest('[data-stop]')) return;
     ui.showYakuModal = false;
+    render();
+    return;
+  }
+  if (actionEl?.dataset.action === 'open-wall') {
+    ui.showWallModal = true;
+    render();
+    return;
+  }
+  if (actionEl?.dataset.action === 'close-wall') {
+    if (actionEl.classList.contains('overlay') && target.closest('[data-stop]')) return;
+    ui.showWallModal = false;
+    ui.searchMode = false;
     render();
     return;
   }
@@ -409,6 +543,7 @@ app.addEventListener('click', (e) => {
   if (searchKindEl?.dataset.searchKind !== undefined && state) {
     const [targetTile] = [...ui.selected];
     if (targetTile !== undefined) {
+      ui.showWallModal = false;
       dispatch({
         type: 'skill_search',
         targetTile,
@@ -431,7 +566,7 @@ app.addEventListener('click', (e) => {
   if (!state) return;
 
   if (el.dataset.tile !== undefined) {
-    if (state.status !== 'playing') return;
+    if (state.status !== 'playing' || ui.isEnemyTurnAnimating) return;
     const t = Number(el.dataset.tile);
 
     // リーチ宣言モード中は、有効な捨て牌候補のみ単一選択で切り替え可能にする
@@ -460,7 +595,7 @@ app.addEventListener('click', (e) => {
   }
 
   if (el.dataset.meld !== undefined) {
-    if (state.status !== 'playing' || ui.riichiSelectMode) return;
+    if (state.status !== 'playing' || ui.riichiSelectMode || ui.isEnemyTurnAnimating) return;
     const i = Number(el.dataset.meld);
     if (ui.selectedMelds.has(i)) ui.selectedMelds.delete(i);
     else ui.selectedMelds.add(i);
@@ -481,6 +616,7 @@ app.addEventListener('click', (e) => {
       break;
     }
     case 'start-riichi-select': {
+      if (ui.isEnemyTurnAnimating) break;
       const validDiscards = findRiichiDiscards(state.hand, state.melds);
       const currentSelected = [...ui.selected];
       ui.selectedMelds.clear();
@@ -532,18 +668,22 @@ app.addEventListener('click', (e) => {
       break;
     }
     case 'skill-search': {
-      ui.searchMode = !ui.searchMode;
-      ui.message = ui.searchMode ? '上部の「残り牌」から手牌と入れ替えたい牌をクリックしてください' : '';
+      if (ui.isEnemyTurnAnimating) break;
+      ui.searchMode = true;
+      ui.showWallModal = true;
+      ui.message = '';
       render();
       break;
     }
     case 'select-all': {
+      if (ui.isEnemyTurnAnimating) break;
       selectAllPlayableTiles(state);
       ui.message = '';
       render();
       break;
     }
     case 'clear':
+      if (ui.isEnemyTurnAnimating) break;
       clearSelection();
       ui.message = '';
       render();

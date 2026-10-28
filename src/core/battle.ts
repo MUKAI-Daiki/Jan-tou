@@ -150,10 +150,29 @@ export type Action =
   | { type: 'skill_search'; targetTile: TileId; kind: Kind }
   | { type: 'choose_reward'; equipId: string };
 
+export interface MonsterTurnStep {
+  /** 敵行動の宣言テキスト（例：「牌スライムの「通常攻撃」！」） */
+  declareText: string;
+  /** 0.3秒ウェイト後に表示するダメージまたはデバフ結果テキスト */
+  effectText: string;
+  /** ダメージorデバフ適用直後の状態スナップショット */
+  stateAfterEffect: BattleState;
+  /** このステップで発生したポップアップイベント */
+  events: BattleEvent[];
+}
+
 export interface StepResult {
   state: BattleState;
   error?: string;
   attack?: AttackEval;
+  /** 敵ターンが発生した場合、敵が行動する直前（プレイヤー行動直後）の状態スナップショット */
+  afterPlayerState?: BattleState;
+  /** プレイヤー行動フェーズで発生したイベント（敵へのダメージポップアップ等） */
+  playerEvents?: BattleEvent[];
+  /** プレイヤー行動フェーズで追加されたログ */
+  playerLogs?: LogEntry[];
+  /** 敵ターンのステップごとの演出データ */
+  monsterTurnSteps?: MonsterTurnStep[];
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +241,7 @@ function decorateDrawnTile(
   s: BattleState,
   rng: Rng,
   tile: TileId,
-  opts: { forceGold?: boolean; ignoreEffects?: boolean } = {},
+  opts: { forceGold?: boolean; riichiGold30?: boolean; ignoreEffects?: boolean } = {},
 ): void {
   if (opts.ignoreEffects) return;
   const k = kindOf(tile);
@@ -248,6 +267,7 @@ function decorateDrawnTile(
 
   // 金牌判定
   let isGold = Boolean(opts.forceGold || s.tileMods[tile] === 'gold' || s.tileMods[tile] === 'red');
+  if (!isGold && opts.riichiGold30 && rng.int(100) < 30) isGold = true;
   if (!isGold && s.buffs.honiisouTurns > 0 && isHonor(k)) isGold = true;
   if (!isGold && s.buffs.chinroutouTurns > 0 && rng.int(100) < 30) isGold = true;
   if (!isGold && isHonor(k) && equips.includes('all_honor_gold')) isGold = true;
@@ -276,7 +296,7 @@ function decorateDrawnTile(
 function drawOne(
   s: BattleState,
   rng: Rng,
-  opts: { forceGold?: boolean; forceKind?: Kind; ignoreEffects?: boolean } = {},
+  opts: { forceGold?: boolean; riichiGold30?: boolean; forceKind?: Kind; ignoreEffects?: boolean } = {},
 ): TileId {
   enforceWallRestrictions(s);
 
@@ -514,7 +534,33 @@ function checkPlayerDefeatOrRevive(s: BattleState): boolean {
   return true;
 }
 
-function executeSingleMonsterAction(s: BattleState, rng: Rng, allowMultiStrike: boolean): void {
+function recordMonsterStep(
+  s: BattleState,
+  steps: MonsterTurnStep[],
+  declareText: string,
+  effectText: string,
+): void {
+  const fullText = effectText ? `${declareText} ${effectText}` : declareText;
+  s.log.push({ side: 'monster', text: fullText });
+  const snap = structuredClone(s);
+  if (snap.status === 'lost') {
+    snap.status = 'playing';
+  }
+  steps.push({
+    declareText,
+    effectText,
+    stateAfterEffect: snap,
+    events: [...s.events],
+  });
+  s.events = [];
+}
+
+function executeSingleMonsterAction(
+  s: BattleState,
+  rng: Rng,
+  allowMultiStrike: boolean,
+  steps: MonsterTurnStep[],
+): void {
   if (s.status !== 'playing' || s.monster.hp <= 0) return;
   const def = s.monster.def;
   const skill = chooseMonsterSkill(def, rng, allowMultiStrike);
@@ -527,25 +573,23 @@ function executeSingleMonsterAction(s: BattleState, rng: Rng, allowMultiStrike: 
 
   const dmgCutCount = countActiveEquip(s, 'dmg_cut_10');
   const dmgCutMult = Math.pow(0.9, dmgCutCount);
+  const riichiCutMult = s.riichi ? 0.5 : 1;
 
   const dealDamageToPlayer = (rawDmg: number, label: string) => {
+    const declareText = `${def.name}の「${label}」！`;
     if (s.buffs.nullifyDamage) {
       s.buffs.nullifyDamage = false;
-      s.log.push({
-        side: 'monster',
-        text: `${def.name}の「${label}」！ → 白セットの障壁がダメージを無効化した！`,
-      });
+      recordMonsterStep(s, steps, declareText, '→ 白セットの障壁がダメージを無効化した！');
       return;
     }
-    const dmg = Math.max(1, Math.round(rawDmg * chargeMult * dmgCutMult));
+    const dmg = Math.max(1, Math.round(rawDmg * chargeMult * dmgCutMult * riichiCutMult));
     s.player.hp = Math.max(0, s.player.hp - dmg);
     s.events.push({ type: 'damage', target: 'player', amount: dmg });
-    s.log.push({
-      side: 'monster',
-      text: `${def.name}の「${label}」！ → ${dmg.toLocaleString()} ダメージ`,
-    });
+    const riichiNote = s.riichi ? '（リーチ中半減）' : '';
+    const effectText = `→ ${dmg.toLocaleString()} ダメージ${riichiNote}`;
     gainExp(s, dmg);
     checkPlayerDefeatOrRevive(s);
+    recordMonsterStep(s, steps, declareText, effectText);
   };
 
   switch (skill.id) {
@@ -558,31 +602,31 @@ function executeSingleMonsterAction(s: BattleState, rng: Rng, allowMultiStrike: 
       break;
     }
     case 'seal_yaku': {
-      s.buffs.sealYakuTurns = Math.max(s.buffs.sealYakuTurns, 3);
-      s.log.push({ side: 'monster', text: `${def.name}の「封印」！ 3ターンの間、役の効果発動が無効化された！` });
+      s.buffs.sealYakuTurns = Math.max(s.buffs.sealYakuTurns, 1);
+      recordMonsterStep(s, steps, `${def.name}の「封印」！`, '1ターンの間、役の効果発動が無効化された！');
       break;
     }
     case 'atk_down': {
       s.buffs.atkDownTurns = Math.max(s.buffs.atkDownTurns, 3);
-      s.log.push({ side: 'monster', text: `${def.name}の「攻撃力ダウン」！ 3ターンの間、攻撃力合計に-10の補正！` });
+      recordMonsterStep(s, steps, `${def.name}の「攻撃力ダウン」！`, '3ターンの間、攻撃力合計に-10の補正！');
       dealDamageToPlayer(Math.round(rollMonsterDamage(def.atk, rng) * 0.6), '追撃');
       break;
     }
     case 'charge': {
       s.enemyBuffs.charged = true;
-      s.log.push({ side: 'monster', text: `${def.name}の「ためる」！ 次のターンのダメージが3倍になる！` });
+      recordMonsterStep(s, steps, `${def.name}の「ためる」！`, '次のターンのダメージが3倍になる！');
       break;
     }
     case 'defend': {
       s.enemyBuffs.defendTurns = Math.max(s.enemyBuffs.defendTurns, 2);
-      s.log.push({ side: 'monster', text: `${def.name}の「防御」！ 2ターンの間、敵へのダメージが半減する！` });
+      recordMonsterStep(s, steps, `${def.name}の「防御」！`, '2ターンの間、敵へのダメージが半減する！');
       break;
     }
     case 'slow': {
       s.buffs.slowTurns = Math.max(s.buffs.slowTurns, 2);
       s.extraChains = 0;
       s.chain = 0;
-      s.log.push({ side: 'monster', text: `${def.name}の「鈍化」！ 装備効果を含めチェーンが完全に封じられた！` });
+      recordMonsterStep(s, steps, `${def.name}の「鈍化」！`, '装備効果を含めチェーンが完全に封じられた！');
       break;
     }
     case 'seal_tiles': {
@@ -595,20 +639,25 @@ function executeSingleMonsterAction(s: BattleState, rng: Rng, allowMultiStrike: 
         pool.splice(idx, 1);
         s.sealedTiles[t] = 3;
       }
-      s.log.push({ side: 'monster', text: `${def.name}の「牌封印」！ 手牌のうち${count}枚が3ターン攻撃に使えなくなった！` });
+      recordMonsterStep(
+        s,
+        steps,
+        `${def.name}の「牌封印」！`,
+        `手牌のうち${count}枚が3ターン攻撃に使えなくなった！`,
+      );
       break;
     }
     case 'heal': {
       const amount = Math.round(s.monster.maxHp * 0.3);
       s.monster.hp = Math.min(s.monster.maxHp, s.monster.hp + amount);
       s.events.push({ type: 'heal', target: 'monster', amount });
-      s.log.push({ side: 'monster', text: `${def.name}の「回復」！ HPが ${amount.toLocaleString()} 回復した！` });
+      recordMonsterStep(s, steps, `${def.name}の「回復」！`, `HPが ${amount.toLocaleString()} 回復した！`);
       break;
     }
     case 'double_strike': {
-      s.log.push({ side: 'monster', text: `${def.name}の「連撃」！ 2回連続で行動する！` });
-      executeSingleMonsterAction(s, rng, false);
-      if (s.status === 'playing') executeSingleMonsterAction(s, rng, false);
+      recordMonsterStep(s, steps, `${def.name}の「連撃」！`, '2回連続で行動する！');
+      executeSingleMonsterAction(s, rng, false, steps);
+      if (s.status === 'playing') executeSingleMonsterAction(s, rng, false, steps);
       break;
     }
     case 'seal_equip': {
@@ -619,7 +668,7 @@ function executeSingleMonsterAction(s: BattleState, rng: Rng, allowMultiStrike: 
         const pick = unsealed[rng.int(unsealed.length)];
         s.sealedEquipIndices.push(pick);
         const eq = getEquipment(s.equipments[pick]);
-        s.log.push({ side: 'monster', text: `${def.name}の「装備封印」！ 装備「${eq.name}」が無効化された！` });
+        recordMonsterStep(s, steps, `${def.name}の「装備封印」！`, `装備「${eq.name}」が無効化された！`);
       } else {
         dealDamageToPlayer(rollMonsterDamage(def.atk, rng), '通常攻撃');
       }
@@ -627,34 +676,40 @@ function executeSingleMonsterAction(s: BattleState, rng: Rng, allowMultiStrike: 
     }
     case 'reflect': {
       s.enemyBuffs.reflectTurns = Math.max(s.enemyBuffs.reflectTurns, 2);
-      s.log.push({ side: 'monster', text: `${def.name}の「反射」！ 2ターンの間、受けたダメージの半分を跳ね返す！` });
+      recordMonsterStep(s, steps, `${def.name}の「反射」！`, '2ターンの間、受けたダメージの半分を跳ね返す！');
       break;
     }
     case 'half_hp': {
+      const declareText = `${def.name}の「割合ダメージ」！`;
       if (s.buffs.nullifyDamage) {
         s.buffs.nullifyDamage = false;
-        s.log.push({ side: 'monster', text: `${def.name}の「割合ダメージ」！ → 白セットの障壁が無効化した！` });
+        recordMonsterStep(s, steps, declareText, '→ 白セットの障壁が無効化した！');
       } else {
-        const dmg = Math.max(1, Math.floor(s.player.hp / 2));
-        s.player.hp -= dmg;
+        const baseDmg = Math.max(1, Math.floor(s.player.hp / 2));
+        const dmg = Math.max(1, Math.round(baseDmg * riichiCutMult));
+        s.player.hp = Math.max(0, s.player.hp - dmg);
         s.events.push({ type: 'damage', target: 'player', amount: dmg });
-        s.log.push({ side: 'monster', text: `${def.name}の「割合ダメージ」！ HPが半分（-${dmg.toLocaleString()}）になった！` });
+        const riichiNote = s.riichi ? '（リーチ中半減）' : '';
         gainExp(s, dmg);
+        checkPlayerDefeatOrRevive(s);
+        recordMonsterStep(s, steps, declareText, `→ ${dmg.toLocaleString()} ダメージ${riichiNote}`);
       }
       break;
     }
     case 'venom': {
       s.buffs.venomTurns = Math.max(s.buffs.venomTurns, 5);
-      s.log.push({
-        side: 'monster',
-        text: `${def.name}の「猛毒」！ 5ターンの間、攻撃力合計-20＋攻撃後にHP-10%！`,
-      });
+      recordMonsterStep(
+        s,
+        steps,
+        `${def.name}の「猛毒」！`,
+        '5ターンの間、攻撃力合計-20＋攻撃後にHP-10%！',
+      );
       break;
     }
     case 'triple_strike': {
-      s.log.push({ side: 'monster', text: `${def.name}の「神速」！ 3回連続で行動する！` });
+      recordMonsterStep(s, steps, `${def.name}の「神速」！`, '3回連続で行動する！');
       for (let i = 0; i < 3 && s.status === 'playing'; i++) {
-        executeSingleMonsterAction(s, rng, false);
+        executeSingleMonsterAction(s, rng, false, steps);
       }
       break;
     }
@@ -667,10 +722,12 @@ function executeSingleMonsterAction(s: BattleState, rng: Rng, allowMultiStrike: 
       }
       s.drawn = [];
       drawN(s, rng, n, { ignoreEffects: true });
-      s.log.push({
-        side: 'monster',
-        text: `${def.name}の「手牌破壊」！ 手牌${n}枚が消去され、素の残り牌${n}枚と入れ替わった！`,
-      });
+      recordMonsterStep(
+        s,
+        steps,
+        `${def.name}の「手牌破壊」！`,
+        `手牌${n}枚が消去され、素の残り牌${n}枚と入れ替わった！`,
+      );
       break;
     }
     case 'break_kan': {
@@ -678,10 +735,12 @@ function executeSingleMonsterAction(s: BattleState, rng: Rng, allowMultiStrike: 
         s.melds.pop();
         s.drawn = [];
         drawN(s, rng, 3, { ignoreEffects: true });
-        s.log.push({
-          side: 'monster',
-          text: `${def.name}の「カン破壊」！ キープしていたカンが破壊され、素の残り牌3枚になった！`,
-        });
+        recordMonsterStep(
+          s,
+          steps,
+          `${def.name}の「カン破壊」！`,
+          'キープしていたカンが破壊され、素の残り牌3枚になった！',
+        );
       } else {
         dealDamageToPlayer(rollMonsterDamage(def.atk, rng), 'カン破壊（不発→強撃）');
       }
@@ -693,22 +752,28 @@ function executeSingleMonsterAction(s: BattleState, rng: Rng, allowMultiStrike: 
       s.sealedTiles = {};
       s.drawn = [];
       drawN(s, rng, targetCount, { ignoreEffects: true });
-      s.log.push({
-        side: 'monster',
-        text: `${def.name}の「全破壊」！ 手牌がすべて消去され、素の残り牌が補充された！`,
-      });
+      recordMonsterStep(
+        s,
+        steps,
+        `${def.name}の「全破壊」！`,
+        '手牌がすべて消去され、素の残り牌が補充された！',
+      );
       break;
     }
   }
 }
 
-function endPlayerTurnAndAdvance(s: BattleState, rng: Rng): void {
+function endPlayerTurnAndAdvance(s: BattleState, rng: Rng, steps: MonsterTurnStep[]): void {
+  const dec = (v: number) => Math.max(0, v - 1);
+
+  // プレイヤーターン終了時に役封印の残りターンを1経過させる（敵が付与した1ターン封印が次の自分の1ターン持続するようにする）
+  s.buffs.sealYakuTurns = dec(s.buffs.sealYakuTurns);
+
   // 敵の行動
-  executeSingleMonsterAction(s, rng, true);
+  executeSingleMonsterAction(s, rng, true, steps);
   if (s.status !== 'playing') return;
 
   // ターン終了時の持続ターン経過処理
-  const dec = (v: number) => Math.max(0, v - 1);
   s.buffs.honiisouTurns = dec(s.buffs.honiisouTurns);
   s.buffs.pinfuTurns = dec(s.buffs.pinfuTurns);
   s.buffs.sanankouTurns = dec(s.buffs.sanankouTurns);
@@ -716,7 +781,6 @@ function endPlayerTurnAndAdvance(s: BattleState, rng: Rng): void {
   s.buffs.chiniisouTurns = dec(s.buffs.chiniisouTurns);
   if (s.buffs.chiniisouTurns === 0) s.buffs.chiniisouSuit = null;
 
-  s.buffs.sealYakuTurns = dec(s.buffs.sealYakuTurns);
   s.buffs.atkDownTurns = dec(s.buffs.atkDownTurns);
   s.buffs.slowTurns = dec(s.buffs.slowTurns);
   s.buffs.venomTurns = dec(s.buffs.venomTurns);
@@ -902,11 +966,12 @@ export function step(prev: BattleState, action: Action): StepResult {
           return fail('リーチ宣言で捨てる牌（聴牌になる牌）を1枚選んでください');
         }
         // 選んだ捨て牌1枚を切ってリーチ宣言＆攻撃処理に移行
+        const prevLogLen = s.log.length;
         s.riichi = true;
         const discardName = kindName(kindOf(action.discardTile));
         s.log.push({
           side: 'player',
-          text: `${discardName} を切ってリーチ宣言！ 3セットが揃うまで自動で自摸切りを進めます！`,
+          text: `${discardName} を切ってリーチ宣言！（被ダメージ半減） 3セットが揃うまで自動で自摸切りを進めます！`,
         });
         // 切った牌を除外して1枚補充（その補充牌が s.drawn[0] になり、敵も行動する）
         const dIdx = s.hand.indexOf(action.discardTile);
@@ -914,13 +979,24 @@ export function step(prev: BattleState, action: Action): StepResult {
         delete s.sealedTiles[action.discardTile];
         s.drawn = [];
         drawOne(s, rng);
-        endPlayerTurnAndAdvance(s, rng);
+        const afterPlayerState = structuredClone(s);
+        const playerEvents = [...s.events];
+        const playerLogs = s.log.slice(prevLogLen);
+        s.events = [];
+        const monsterTurnSteps: MonsterTurnStep[] = [];
+        endPlayerTurnAndAdvance(s, rng, monsterTurnSteps);
         s.rng = rng.state;
-        return { state: s };
+        return {
+          state: s,
+          afterPlayerState,
+          playerEvents,
+          playerLogs,
+          monsterTurnSteps,
+        };
       }
 
       s.riichi = true;
-      s.log.push({ side: 'player', text: 'リーチ宣言！ 3セットが揃うまで自動で自摸切りを進めます！' });
+      s.log.push({ side: 'player', text: 'リーチ宣言！（被ダメージ半減） 3セットが揃うまで自動で自摸切りを進めます！' });
       s.rng = rng.state;
       return { state: s };
     }
@@ -1049,6 +1125,7 @@ export function step(prev: BattleState, action: Action): StepResult {
       const ev = evaluateSelection(tiles, melds, ctx);
       if (!ev.valid) return fail(ev.reason ?? '攻撃できません');
 
+      const prevLogLen = s.log.length;
       const yakuIds = new Set(ev.yaku.map((y) => y.id));
 
       // 三槓子：このバトルの経験値30倍（ダメージ経験値が入る前に適用）
@@ -1058,7 +1135,7 @@ export function step(prev: BattleState, action: Action): StepResult {
 
       const yakuText = ev.yaku.length > 0 ? ev.yaku.map((y) => y.name).join('・') : '役なし';
       const chainLabel = s.chain > 0 ? ` [${s.chain} Chain]` : '';
-      const riichiLabel = ev.isRiichiComplete ? ' [リーチ完成×2]' : '';
+      const riichiLabel = ev.isRiichiComplete ? ' [リーチ完成×2・補充30%金化]' : '';
 
       // 治療モード判定
       if (s.healMode) {
@@ -1089,7 +1166,8 @@ export function step(prev: BattleState, action: Action): StepResult {
 
         // 敵の「反射」判定
         if (s.enemyBuffs.reflectTurns > 0 && s.monster.hp > 0) {
-          const reflectDmg = Math.max(1, Math.floor(ev.damage / 2));
+          const rawReflect = Math.max(1, Math.floor(ev.damage / 2));
+          const reflectDmg = s.riichi ? Math.max(1, Math.round(rawReflect * 0.5)) : rawReflect;
           s.player.hp = Math.max(0, s.player.hp - reflectDmg);
           s.events.push({ type: 'damage', target: 'player', amount: reflectDmg });
           s.log.push({
@@ -1200,8 +1278,10 @@ export function step(prev: BattleState, action: Action): StepResult {
         }
       }
 
+      const riichiGold30 = ev.isRiichiComplete;
       if (ev.isRiichiComplete) {
         s.riichi = false;
+        s.log.push({ side: 'system', text: '【リーチ完成効果】今回の補充牌が30%の確率で金牌になる！' });
       }
 
       // 使用した手牌とカンを消費
@@ -1220,7 +1300,7 @@ export function step(prev: BattleState, action: Action): StepResult {
         countActiveEquip(s, 'single_clone_draw') > 0
       ) {
         const cloneKind = kindOf(s.hand[rng.int(s.hand.length)]);
-        drawOne(s, rng, { forceKind: cloneKind, forceGold: forceGoldDrawCount > 0 });
+        drawOne(s, rng, { forceKind: cloneKind, forceGold: forceGoldDrawCount > 0, riichiGold30 });
         needDraw = 0;
       }
 
@@ -1230,8 +1310,8 @@ export function step(prev: BattleState, action: Action): StepResult {
         const availKinds = ACTIVE_KINDS.filter((k) => !isKindBanished(s, k));
         for (let p = 0; p < pairsToDraw; p++) {
           const pk = availKinds[rng.int(availKinds.length)];
-          drawOne(s, rng, { forceKind: pk, forceGold: forceGoldDrawCount-- > 0 });
-          drawOne(s, rng, { forceKind: pk, forceGold: forceGoldDrawCount-- > 0 });
+          drawOne(s, rng, { forceKind: pk, forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
+          drawOne(s, rng, { forceKind: pk, forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
           needDraw -= 2;
         }
       }
@@ -1241,14 +1321,14 @@ export function step(prev: BattleState, action: Action): StepResult {
         const availKinds = ACTIVE_KINDS.filter((k) => !isKindBanished(s, k));
         const tk = availKinds[rng.int(availKinds.length)];
         for (let i = 0; i < 3; i++) {
-          drawOne(s, rng, { forceKind: tk, forceGold: forceGoldDrawCount-- > 0 });
+          drawOne(s, rng, { forceKind: tk, forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
         }
         needDraw -= 3;
       }
 
       // 残りの通常補充
       while (needDraw > 0) {
-        drawOne(s, rng, { forceGold: forceGoldDrawCount-- > 0 });
+        drawOne(s, rng, { forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
         needDraw--;
       }
 
@@ -1263,7 +1343,8 @@ export function step(prev: BattleState, action: Action): StepResult {
 
       // 猛毒デバフ中の攻撃後ダメージ（HP-10%）
       if (s.buffs.venomTurns > 0) {
-        const poisonDmg = Math.max(1, Math.round(s.player.maxHp * 0.1));
+        const rawPoison = Math.max(1, Math.round(s.player.maxHp * 0.1));
+        const poisonDmg = s.riichi ? Math.max(1, Math.round(rawPoison * 0.5)) : rawPoison;
         s.player.hp = Math.max(0, s.player.hp - poisonDmg);
         s.events.push({ type: 'damage', target: 'player', amount: poisonDmg });
         s.log.push({ side: 'system', text: `猛毒のダメージ！ HPが ${poisonDmg} 減少した！` });
@@ -1284,7 +1365,21 @@ export function step(prev: BattleState, action: Action): StepResult {
       if (s.buffs.slowTurns > 0) {
         s.extraChains = 0;
         s.chain = 0;
-        endPlayerTurnAndAdvance(s, rng);
+        const afterPlayerState = structuredClone(s);
+        const playerEvents = [...s.events];
+        const playerLogs = s.log.slice(prevLogLen);
+        s.events = [];
+        const monsterTurnSteps: MonsterTurnStep[] = [];
+        endPlayerTurnAndAdvance(s, rng, monsterTurnSteps);
+        s.rng = rng.state;
+        return {
+          state: s,
+          attack: ev,
+          afterPlayerState,
+          playerEvents,
+          playerLogs,
+          monsterTurnSteps,
+        };
       } else {
         s.extraChains += ev.gainedChains;
         if (s.extraChains > 0) {
@@ -1295,13 +1390,26 @@ export function step(prev: BattleState, action: Action): StepResult {
             side: 'system',
             text: `チェーン発生！（${s.chain} Chain${nextMult > 1 ? `・次倍率×${nextMult}` : ''} ／ 残り追加行動 ${s.extraChains}回）もう一度攻撃できます！`,
           });
+          s.rng = rng.state;
+          return { state: s, attack: ev };
         } else {
-          endPlayerTurnAndAdvance(s, rng);
+          const afterPlayerState = structuredClone(s);
+          const playerEvents = [...s.events];
+          const playerLogs = s.log.slice(prevLogLen);
+          s.events = [];
+          const monsterTurnSteps: MonsterTurnStep[] = [];
+          endPlayerTurnAndAdvance(s, rng, monsterTurnSteps);
+          s.rng = rng.state;
+          return {
+            state: s,
+            attack: ev,
+            afterPlayerState,
+            playerEvents,
+            playerLogs,
+            monsterTurnSteps,
+          };
         }
       }
-
-      s.rng = rng.state;
-      return { state: s, attack: ev };
     }
   }
 }
