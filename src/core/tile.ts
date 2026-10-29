@@ -10,6 +10,15 @@ export type TileId = number;
 export type Kind = number;
 export type Suit = 'm' | 'p' | 's' | 'z';
 export type TileMod = 'normal' | 'gold' | 'red' | 'rainbow';
+export type TileGroup = 'm' | 'p' | 's' | 'wind' | 'dragon';
+
+export const TILE_GROUP_LABEL: Record<TileGroup, string> = {
+  m: '萬子',
+  p: '筒子',
+  s: '索子',
+  wind: '風牌（東南西北）',
+  dragon: '三元牌（白發中）',
+};
 
 export const KIND_COUNT = 34;
 export const TILE_COUNT = 136;

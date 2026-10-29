@@ -3,6 +3,8 @@ import {
   buildScoreContext,
   countActiveEquip,
   getActiveEquips,
+  hasAnyPlayerDebuff,
+  isKindBanished,
   wallCounts,
 } from '../core/battle';
 import {
@@ -17,6 +19,8 @@ import { AttackEval, calcSingleTilePower, effectiveTileMod } from '../core/score
 import {
   ACTIVE_KINDS,
   Kind,
+  TILE_GROUP_LABEL,
+  TileGroup,
   TileId,
   TileMod,
   kindName,
@@ -28,7 +32,7 @@ import {
 } from '../core/tile';
 import { YAKU_CATALOG } from '../core/yaku';
 import { RARITY_LABEL, getEquipment } from '../data/equipments';
-import { EXP_PER_LEVEL, MAX_STAGE, MONSTERS } from '../data/monsters';
+import { MAX_STAGE, MONSTERS, expForNextLevel } from '../data/monsters';
 
 export interface UiState {
   selected: Set<TileId>;
@@ -44,10 +48,14 @@ export interface UiState {
   /** 現在ライブ表示中のテキスト */
   liveLogText: string;
   liveLogSide: 'player' | 'monster' | 'system';
+  /** 行移行時のスライドアニメーション状態 */
+  liveLogTransition?: 'idle' | 'out' | 'in';
   /** 現在の攻撃・被弾演出フェーズ */
   combatPhase: 'idle' | 'player' | 'monster';
   /** 敵ターン演出の進行中かどうか */
   isEnemyTurnAnimating?: boolean;
+  /** レベルアップボーナス選択モーダルのサブ画面状態 */
+  levelBonusStep?: 'root' | 'select_group' | 'select_kind';
   message: string;
   showYakuModal?: boolean;
   showWallModal?: boolean;
@@ -64,6 +72,9 @@ export interface Preview {
   text: string;
   subText?: string;
   canAttack: boolean;
+  canGuard: boolean;
+  canCure: boolean;
+  guardAmount?: number;
   canKan: boolean;
   canRiichi: boolean;
   canConfirmRiichi: boolean;
@@ -96,10 +107,9 @@ export function tileHtml(
           : '';
   const sealBadge =
     opts.sealed && opts.sealed > 0 ? `<span class="sbadge">封${opts.sealed}</span>` : '';
-  const tsumoBadge = opts.isTsumo ? '<span class="tbadge">自摸</span>' : '';
 
   return `<div class="tile s-${s}${honorCls}${modCls}${sealCls} ${cls}" ${attrs}>
-    ${modBadge}${sealBadge}${tsumoBadge}
+    ${modBadge}${sealBadge}
     <span class="t">${f.top}</span>${f.bottom ? `<span class="b">${f.bottom}</span>` : ''}
     ${pwrBadge}
   </div>`;
@@ -199,9 +209,9 @@ export function renderTitle(showYakuModal = false): string {
   ).join('');
   return `<main class="title">
     <h1>雀闘<span class="kari">：改</span></h1>
-    <p class="sub">牌を束ね、役の効果とチェーンで8連戦を勝ち抜け。</p>
+    <p class="sub">牌を束ね、役の効果とチェーンで${MAX_STAGE}連戦を勝ち抜け。</p>
     <div class="start-hero">
-      <button class="btn-start-main" data-monster="${MONSTERS[0].id}">8連戦を開始する（第1戦〜）</button>
+      <button class="btn-start-main" data-monster="${MONSTERS[0].id}">${MAX_STAGE}連戦を開始する（第1戦〜）</button>
       <button class="btn-yaku" data-action="open-yaku">📖 役と効果一覧を見る</button>
     </div>
     <section class="rules">
@@ -209,9 +219,10 @@ export function renderTitle(showYakuModal = false): string {
         <li><b>全34種136枚</b>を使用。手牌は9枚。「打牌」はなく、<b>任意の枚数の牌を選んで「攻撃」</b>し、使った枚数だけ補充される。</li>
         <li><b>牌の攻撃力とセットボーナス</b>：1・9・字牌は<b>10</b>、2〜8はその数字。セットが含まれるとボーナス加算（<b>同牌セット+20 ／ 並びセット+10 ／ ペア+5 ／ カン+30＆基礎攻撃+50%</b>）。</li>
         <li><b>役とチェーン</b>：攻撃に「役」が含まれると固有の<b>効果</b>が発動し、<b>チェーン（連続攻撃）</b>が発生！チェーン中はダメージに <b>×(Chain数＋1)</b> の補正がかかる。</li>
-        <li><b>特殊牌</b>：<b>金牌</b>は1枚ごとに最終ダメージ<b>+50%</b>。<b>赤牌</b>は金牌効果＋役攻撃で経験値ボーナス。<b>虹牌</b>はセットに含めると最終ダメージ<b>2倍＆チェーン+2</b>。</li>
+        <li><b>特殊牌</b>：<b>金牌</b>は1枚ごとに最終ダメージ<b>+50%</b>。<b>赤牌</b>は金牌効果＋攻撃使用で同じ種類の牌の基礎攻撃力<b>+5（永続）</b>。<b>虹牌</b>はセットに含めると最終ダメージ<b>2倍＆チェーン+2</b>。</li>
+        <li><b>ガード・治療</b>：攻撃する代わりに選んだ牌の基礎攻撃力分、次の被ダメージを軽減する<b>ガード</b>（役は不発）、攻撃を1ターン放棄してデバフを1つランダム解除する<b>治療</b>が使用可能。</li>
         <li><b>カン・リーチ・マリガン</b>：同種4枚で<b>カン</b>（キープ＋金牌1枚補充、2セット役以上で使用可）。あと1枚で3セットが揃う時は捨て牌を1枚選んで<b>リーチ</b>宣言可（<b>リーチ中は被ダメージ半減</b>、右端の自摸牌をオート自摸切り、完成攻撃で<b>威力2倍＆チェーン＋補充牌30%金牌化</b>）。1ターン目に1・9・字牌が6枚以上なら<b>マリガン</b>（手牌総入れ替え・2回まで）可能。</li>
-        <li><b>8連戦・成長・装備</b>：与ダメージ＋被ダメージがそのまま経験値になり、500EXPごとにレベルアップ（最大HP+10%・HP30%回復）。勝利ごとに3択の<b>ユニーク装備</b>を獲得し、手牌・持続効果・残り牌を次の戦いへ持ち越す！</li>
+        <li><b>${MAX_STAGE}連戦・成長・装備</b>：<b>与ダメージ</b>および<b>役成立ボーナス（1セット役 &lt; 2セット役 &lt; 3セット役 &lt; 役満相当役）</b>で経験値を獲得してレベルアップ（最大HP+10%・HP30%回復・能力アップ選択）。勝利ごとに3択の<b>ユニーク装備</b>を獲得し、手牌・持続効果・残り牌を次の戦いへ持ち越す！</li>
       </ul>
     </section>
     <h2>ステージを選択して開始</h2>
@@ -224,8 +235,9 @@ function renderBuffBadges(s: BattleState): string {
   const badges: string[] = [];
   const b = s.buffs;
   if (s.riichi) badges.push('<span class="badge buff">リーチ宣言中(被ダメ半減)</span>');
-  if (s.healMode) badges.push('<span class="badge buff">治療モードON</span>');
+  if (s.healMode) badges.push('<span class="badge buff">回復変換ON</span>');
   if (b.nullifyDamage) badges.push('<span class="badge buff">白障壁(次ダメージ無効)</span>');
+  if (b.guardBarrier > 0) badges.push(`<span class="badge buff">ガード軽減(-${b.guardBarrier})</span>`);
   if (b.sanankouTurns > 0) badges.push(`<span class="badge buff">三暗刻:威力3倍(${b.sanankouTurns}T)</span>`);
   if (b.honiisouTurns > 0) badges.push(`<span class="badge buff">混一色:字牌金化(${b.honiisouTurns}T)</span>`);
   if (b.pinfuTurns > 0) badges.push(`<span class="badge buff">平和:自動回復(${b.pinfuTurns}T)</span>`);
@@ -234,6 +246,15 @@ function renderBuffBadges(s: BattleState): string {
     badges.push(`<span class="badge buff">清一色:${suitName(b.chiniisouSuit)}補充(${b.chiniisouTurns}T)</span>`);
   }
   if (s.expMult > 1) badges.push(`<span class="badge buff">経験値×${s.expMult}</span>`);
+  const groups: TileGroup[] = ['m', 'p', 's', 'wind', 'dragon'];
+  for (const g of groups) {
+    const val = s.bonusTileAtk?.[g] ?? 0;
+    if (val > 0) {
+      const shortLabel =
+        g === 'm' ? '萬子' : g === 'p' ? '筒子' : g === 's' ? '索子' : g === 'wind' ? '風牌' : '三元牌';
+      badges.push(`<span class="badge buff">${shortLabel}攻撃+${val}</span>`);
+    }
+  }
 
   if (b.sealYakuTurns > 0) badges.push(`<span class="badge debuff">役封印(${b.sealYakuTurns}T)</span>`);
   if (b.atkDownTurns > 0) badges.push(`<span class="badge debuff">攻撃力-10(${b.atkDownTurns}T)</span>`);
@@ -251,8 +272,111 @@ function renderEnemyBuffBadges(s: BattleState): string {
   return badges.join('');
 }
 
-function renderRewardModal(s: BattleState): string {
-  if (s.status !== 'reward') return '';
+function renderLevelUpModal(s: BattleState, ui: UiState): string {
+  if (s.pendingLevelUps <= 0 || s.status === 'lost' || ui.isEnemyTurnAnimating) return '';
+  const step = ui.levelBonusStep ?? 'root';
+  const remNote = s.pendingLevelUps > 1 ? `（残り ${s.pendingLevelUps} 回選択）` : '';
+
+  if (step === 'select_group') {
+    const groupDefs: { group: TileGroup; samples: Kind[] }[] = [
+      { group: 'm', samples: [0, 4, 8] },
+      { group: 'p', samples: [9, 13, 17] },
+      { group: 's', samples: [18, 22, 26] },
+      { group: 'wind', samples: [27, 28, 29, 30] },
+      { group: 'dragon', samples: [31, 32, 33] },
+    ];
+    const cards = groupDefs
+      .map(({ group, samples }) => {
+        const cur = s.bonusTileAtk?.[group] ?? 0;
+        const sampleHtml = samples.map((k) => tileHtml(k, '', 'mini')).join('');
+        return `<button class="equip-card rarity-uncommon" data-level-group="${group}">
+          <div class="eq-rarity">現在の強化値: +${cur} → <b>+${cur + 2}</b></div>
+          <div class="eq-name">${esc(TILE_GROUP_LABEL[group])} の攻撃力+2</div>
+          <div class="yaku-example">${sampleHtml}</div>
+        </button>`;
+      })
+      .join('');
+
+    return `<div class="overlay">
+      <div class="reward-modal levelup-modal">
+        <div class="yaku-modal-head">
+          <h2>⚔️ 攻撃力+2にする牌種を選択${remNote}</h2>
+          <button class="btn-clear btn-sm" data-action="level-bonus-back">← 戻る</button>
+        </div>
+        <p class="reward-sub">選択した種類のすべての牌の基礎攻撃力が、この${MAX_STAGE}連戦の間永続的に +2 されます。</p>
+        <div class="equip-choices">${cards}</div>
+      </div>
+    </div>`;
+  }
+
+  if (step === 'select_kind') {
+    const counts = wallCounts(s);
+    const wall = ACTIVE_KINDS.map((k) => {
+      const c = counts[k];
+      const banished = isKindBanished(s, k);
+      const attr = banished ? '' : `data-level-banish-kind="${k}"`;
+      const cls = banished ? ' empty banished-cell' : ' searchable';
+      return `<div class="wall-cell${cls}" ${attr}>
+        ${tileHtml(k, '', 'mini')}
+        <span class="cnt">${banished ? '封鎖済' : `残${c}→0`}</span>
+      </div>`;
+    }).join('');
+
+    return `<div class="overlay">
+      <div class="wall-modal levelup-modal">
+        <div class="yaku-modal-head">
+          <h2>🚫 永続的に残り牌0にする牌を選択${remNote}</h2>
+          <button class="btn-clear btn-sm" data-action="level-bonus-back">← 戻る</button>
+        </div>
+        <p class="reward-sub">クリックした牌の残り牌数が永続的に0になり、以降の補充や山リセットでも出現しなくなります。</p>
+        <div class="wall-grid">${wall}</div>
+      </div>
+    </div>`;
+  }
+
+  return `<div class="overlay">
+    <div class="reward-modal levelup-modal">
+      <h2>🎉 レベルアップ！（Lv.${s.player.level}）能力アップを選択${remNote}</h2>
+      <p class="reward-sub">以下の3つのボーナスから1つを選んで能力を強化してください。</p>
+      <div class="equip-choices">
+        <button class="equip-card rarity-uncommon" data-action="level-bonus-hp">
+          <div class="eq-rarity">耐久強化</div>
+          <div class="eq-name">❤️ 最大HP＋20</div>
+          <div class="eq-desc">最大HPと現在HPを +20 増加させる（現在 ${s.player.maxHp} → ${s.player.maxHp + 20}）</div>
+        </button>
+        <button class="equip-card rarity-rare" data-action="level-bonus-group-menu">
+          <div class="eq-rarity">火力強化（牌種選択へ）</div>
+          <div class="eq-name">⚔️ 特定牌種の攻撃力＋2</div>
+          <div class="eq-desc">［萬子・筒子・索子・風牌・三元牌］のうち1種類を選び、基礎攻撃力を永続的に+2する</div>
+        </button>
+        <button class="equip-card rarity-legend" data-action="level-bonus-kind-menu">
+          <div class="eq-rarity">山圧縮（牌選択へ）</div>
+          <div class="eq-name">🚫 残り牌1つを永続的に0に</div>
+          <div class="eq-desc">全34種の中から1つを選び、その牌の残り牌数を永続的に0枚にする</div>
+        </button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderLogModal(s: BattleState): string {
+  const log = s.log
+    .slice(-100)
+    .map((l) => `<li class="log-${l.side}">${esc(l.text)}</li>`)
+    .join('');
+  return `<div class="overlay" data-action="toggle-log">
+    <div class="wall-modal log-modal" data-stop>
+      <div class="yaku-modal-head">
+        <h2>📜 バトルログ履歴（${s.log.length}件）</h2>
+        <button class="btn-clear btn-sm" data-action="toggle-log">閉じる</button>
+      </div>
+      <ul class="log" id="log">${log}</ul>
+    </div>
+  </div>`;
+}
+
+function renderRewardModal(s: BattleState, ui: UiState): string {
+  if (s.status !== 'reward' || s.pendingLevelUps > 0 || ui.isEnemyTurnAnimating) return '';
   const cards = s.rewardChoices
     .map((id) => {
       const eq = getEquipment(id);
@@ -339,7 +463,7 @@ export function renderBattle(v: BattleView): string {
       const tiles = m.tiles
         .map((t, j) => {
           const mod = effectiveTileMod(t, s.tileMods, activeEquips);
-          const pwr = calcSingleTilePower(m.kind, activeEquips);
+          const pwr = calcSingleTilePower(m.kind, activeEquips, s.bonusTileAtk);
           return j === 0 || j === 3
             ? tileHtml(m.kind, '', 'back', { mod, power: pwr })
             : tileHtml(m.kind, '', '', { mod, power: pwr });
@@ -369,7 +493,7 @@ export function renderBattle(v: BattleView): string {
     .map((t) => {
       const k = kindOf(t);
       const mod = effectiveTileMod(t, s.tileMods, activeEquips);
-      const pwr = calcSingleTilePower(k, activeEquips);
+      const pwr = calcSingleTilePower(k, activeEquips, s.bonusTileAtk);
       const sealed = s.sealedTiles[t] ?? 0;
       const orderIdx = ui.selectionOrder.indexOf(t);
       const isNew = drawnSet.has(t);
@@ -397,19 +521,31 @@ export function renderBattle(v: BattleView): string {
     })
     .join('');
 
-  const log = s.log
-    .slice(-80)
-    .map((l) => `<li class="log-${l.side}">${esc(l.text)}</li>`)
-    .join('');
-
-  // 装備スキルの表示判定
+  // 装備スキルの表示判定（現在使用可能なもののみ表示）
   const hasHealSkill = countActiveEquip(s, 'unlock_heal') > 0;
   const hasResetWallSkill = countActiveEquip(s, 'skill_reset_wall') > 0;
   const hasCopySkill = countActiveEquip(s, 'skill_copy') > 0;
   const hasSearchSkill = countActiveEquip(s, 'skill_search') > 0;
 
-  const canCopyNow = hasCopySkill && s.cooldowns.copy === 0 && ui.selectionOrder.length === 2;
-  const canSearchNow = hasSearchSkill && s.cooldowns.search === 0 && ui.selected.size === 1;
+  const canUseSkillsNow = !ui.isEnemyTurnAnimating && !s.riichi && !ui.riichiSelectMode && s.status === 'playing';
+  const canToggleHealNow = canUseSkillsNow && hasHealSkill;
+  const canResetWallNow = canUseSkillsNow && hasResetWallSkill && s.cooldowns.resetWall === 0;
+  const canCopyNow = canUseSkillsNow && hasCopySkill && s.cooldowns.copy === 0 && ui.selectionOrder.length === 2;
+  const canSearchNow = canUseSkillsNow && hasSearchSkill && s.cooldowns.search === 0 && ui.selected.size === 1;
+  const hasAnyUsableSkill = canToggleHealNow || canResetWallNow || canCopyNow || canSearchNow;
+
+  const playableHandCount = s.hand.filter((t) => !(s.sealedTiles[t] > 0)).length;
+  const canSelectAll =
+    !ui.isEnemyTurnAnimating &&
+    !s.riichi &&
+    !ui.riichiSelectMode &&
+    playableHandCount > 0 &&
+    (ui.selected.size < playableHandCount || ui.selectedMelds.size < s.melds.length);
+  const canClearSelection =
+    !ui.isEnemyTurnAnimating &&
+    !s.riichi &&
+    !ui.riichiSelectMode &&
+    (ui.selected.size > 0 || ui.selectedMelds.size > 0);
 
   // 所持装備一覧
   const equipBadges =
@@ -428,7 +564,7 @@ export function renderBattle(v: BattleView): string {
   const result =
     s.status === 'won' || s.status === 'lost'
       ? `<div class="overlay"><div class="result ${s.status}">
-          <h2>${s.status === 'won' ? '全8連戦 制覇！！' : `第${s.stage}戦 敗北……`}</h2>
+          <h2>${s.status === 'won' ? `全${MAX_STAGE}連戦 制覇！！` : `第${s.stage}戦 敗北……`}</h2>
           <p>到達ステージ: ${s.stage} / ${MAX_STAGE} ｜ Lv.${s.player.level} ｜ 残りHP ${s.player.hp.toLocaleString()}</p>
           <div class="result-actions">
             <button data-action="retry">第1戦から再挑戦</button>
@@ -471,12 +607,19 @@ export function renderBattle(v: BattleView): string {
     <section class="live-log-section side-${ui.liveLogSide}">
       <div class="live-log-bar">
         <span class="live-icon">${liveIcon}</span>
-        <div class="live-text" id="live-log-text">${esc(ui.liveLogText)}</div>
+        <div class="live-text-viewport">
+          <div class="live-text${
+            ui.liveLogTransition === 'out'
+              ? ' slide-out'
+              : ui.liveLogTransition === 'in'
+                ? ' slide-in'
+                : ''
+          }" id="live-log-text">${esc(ui.liveLogText)}</div>
+        </div>
         <button class="btn-clear btn-xs" data-action="toggle-log">
-          📜 ログ履歴を${ui.logOpen ? '閉じる ▲' : '開く ▼'}（${s.log.length}）
+          📜 ログ（${s.log.length}）
         </button>
       </div>
-      ${ui.logOpen ? `<ul class="log" id="log">${log}</ul>` : ''}
     </section>
 
     <section class="table">
@@ -504,85 +647,92 @@ export function renderBattle(v: BattleView): string {
         ${melds ? `<div class="melds">${melds}</div>` : ''}
       </div>
       <div class="preview${preview.ev?.valid || preview.canConfirmRiichi ? ' ok' : ''}">
-        <div>${esc(preview.text)}</div>
-        ${preview.subText ? `<div class="preview-sub">${esc(preview.subText)}</div>` : ''}
+        <div class="preview-main">${esc(ui.message ? `⚠️ ${ui.message}` : preview.text)}</div>
+        <div class="preview-sub">${esc(preview.subText ?? '')}</div>
       </div>
-      ${ui.message ? `<div class="message">${esc(ui.message)}</div>` : ''}
       <div class="actions">
         ${
-          ui.riichiSelectMode
-            ? `<button class="btn-riichi" data-action="confirm-riichi" ${
-                preview.canConfirmRiichi && !ui.isEnemyTurnAnimating ? '' : 'disabled'
-              }>🔥 この牌を切ってリーチ確定！</button>
-              <button class="btn-clear" data-action="cancel-riichi-select">戻る</button>`
-            : `<button class="btn-attack" data-action="attack" ${
-                preview.canAttack && !ui.isEnemyTurnAnimating ? '' : 'disabled'
-              }>
-                ${s.healMode ? '💚 治療攻撃（回復）' : '⚔️ 攻撃（破棄＆補充）'}
-              </button>
-              <button class="btn-kan" data-action="kan" ${
-                preview.canKan && !ui.isEnemyTurnAnimating ? '' : 'disabled'
-              }>カン（4枚キープ）</button>
-              ${
-                s.riichi
-                  ? `<button class="btn-cancel-riichi" data-action="cancel-riichi" ${
-                      ui.isEnemyTurnAnimating ? 'disabled' : ''
-                    }>🚫 リーチキャンセル（5T役封印）</button>`
-                  : `<button class="btn-riichi" data-action="start-riichi-select" ${
-                      preview.canRiichi && !ui.isEnemyTurnAnimating ? '' : 'disabled'
-                    }>リーチ宣言（捨て牌選択）</button>`
-              }
-              ${
-                preview.canMulligan
-                  ? `<button class="btn-mulligan" data-action="mulligan" ${
-                      ui.isEnemyTurnAnimating ? 'disabled' : ''
-                    }>マリガン（残り${2 - s.mulligansUsed}回）</button>`
-                  : ''
-              }
-              <button class="btn-clear" data-action="select-all" ${
-                ui.isEnemyTurnAnimating ? 'disabled' : ''
-              }>全選択</button>
-              <button class="btn-clear" data-action="clear" ${
-                ui.isEnemyTurnAnimating ? 'disabled' : ''
-              }>選択解除</button>
-              <button class="btn-wall" data-action="open-wall">🀄 残り牌(${s.wall.length})</button>
-              <button class="btn-yaku" data-action="open-yaku">役一覧</button>`
+          ui.isEnemyTurnAnimating
+            ? ''
+            : ui.riichiSelectMode
+              ? `${
+                  preview.canConfirmRiichi
+                    ? '<button class="btn-riichi" data-action="confirm-riichi">🔥 この牌を切ってリーチ確定！</button>'
+                    : ''
+                }
+                <button class="btn-clear" data-action="cancel-riichi-select">戻る</button>`
+              : `${
+                  preview.canAttack
+                    ? `<button class="btn-attack" data-action="attack">${
+                        s.healMode ? '💚 回復変換攻撃' : '⚔️ 攻撃（破棄＆補充）'
+                      }</button>`
+                    : ''
+                }
+                ${
+                  preview.canGuard
+                    ? `<button class="btn-guard" data-action="guard">🛡️ ガード（軽減 -${(
+                        preview.guardAmount ?? 0
+                      ).toLocaleString()}）</button>`
+                    : ''
+                }
+                ${
+                  preview.canCure
+                    ? '<button class="btn-cure" data-action="cure-debuff">💊 治療（デバフ解除）</button>'
+                    : ''
+                }
+                ${
+                  preview.canKan
+                    ? '<button class="btn-kan" data-action="kan">カン（4枚キープ）</button>'
+                    : ''
+                }
+                ${
+                  s.riichi
+                    ? '<button class="btn-cancel-riichi" data-action="cancel-riichi">🚫 リーチキャンセル（5T役封印）</button>'
+                    : preview.canRiichi
+                      ? '<button class="btn-riichi" data-action="start-riichi-select">リーチ宣言（捨て牌選択）</button>'
+                      : ''
+                }
+                ${
+                  preview.canMulligan
+                    ? `<button class="btn-mulligan" data-action="mulligan">マリガン（残り${2 - s.mulligansUsed}回）</button>`
+                    : ''
+                }
+                ${
+                  canSelectAll
+                    ? '<button class="btn-clear" data-action="select-all">全選択</button>'
+                    : ''
+                }
+                ${
+                  canClearSelection
+                    ? '<button class="btn-clear" data-action="clear">選択解除</button>'
+                    : ''
+                }`
         }
       </div>
       ${
-        hasHealSkill || hasResetWallSkill || hasCopySkill || hasSearchSkill
+        hasAnyUsableSkill
           ? `<div class="skill-actions">
               <span class="skill-label">装備スキル：</span>
               ${
-                hasHealSkill
-                  ? `<button class="btn-skill ${s.healMode ? 'active' : ''}" data-action="toggle-heal" ${
-                      ui.isEnemyTurnAnimating ? 'disabled' : ''
-                    }>治療切替(${s.healMode ? 'ON' : 'OFF'})</button>`
+                canToggleHealNow
+                  ? `<button class="btn-skill ${s.healMode ? 'active' : ''}" data-action="toggle-heal">回復変換(${
+                      s.healMode ? 'ON' : 'OFF'
+                    })</button>`
                   : ''
               }
               ${
-                hasResetWallSkill
-                  ? `<button class="btn-skill" data-action="skill-reset-wall" ${
-                      s.cooldowns.resetWall > 0 || ui.isEnemyTurnAnimating ? 'disabled' : ''
-                    }>残り牌リセット${s.cooldowns.resetWall > 0 ? `(CT:${s.cooldowns.resetWall})` : ''}</button>`
+                canResetWallNow
+                  ? '<button class="btn-skill" data-action="skill-reset-wall">残り牌リセット</button>'
                   : ''
               }
               ${
-                hasCopySkill
-                  ? `<button class="btn-skill" data-action="skill-copy" ${
-                      canCopyNow && !ui.isEnemyTurnAnimating ? '' : 'disabled'
-                    } title="手牌を2枚選択（1枚目を2枚目と同じ牌に変化）">複製${
-                      s.cooldowns.copy > 0 ? `(CT:${s.cooldowns.copy})` : '(手牌2枚選択)'
-                    }</button>`
+                canCopyNow
+                  ? '<button class="btn-skill" data-action="skill-copy" title="1枚目の選択牌を2枚目の選択牌と同じ牌に変化">複製を実行</button>'
                   : ''
               }
               ${
-                hasSearchSkill
-                  ? `<button class="btn-skill ${ui.searchMode ? 'active' : ''}" data-action="skill-search" ${
-                      canSearchNow && !ui.isEnemyTurnAnimating ? '' : 'disabled'
-                    } title="手牌を1枚選んで押し、残り牌モーダルからクリック">サーチ${
-                      s.cooldowns.search > 0 ? `(CT:${s.cooldowns.search})` : '(手牌1枚選択)'
-                    }</button>`
+                canSearchNow
+                  ? `<button class="btn-skill ${ui.searchMode ? 'active' : ''}" data-action="skill-search" title="選択中の手牌を残り牌の任意の牌に変化">サーチを実行</button>`
                   : ''
               }
             </div>`
@@ -593,7 +743,7 @@ export function renderBattle(v: BattleView): string {
     <section class="player${playerHit}">
       <div class="player-head">
         <span>あなた（Lv.${s.player.level} ／ 攻撃補正 ×${(1 + s.player.level / 4).toFixed(2)}）</span>
-        ${expBar(s.player.exp, EXP_PER_LEVEL)}
+        ${expBar(s.player.exp, expForNextLevel(s.player.level))}
       </div>
       ${hpBar(s.player.hp, s.player.maxHp, 'player-hp')}
       <div class="equip-bar">
@@ -602,8 +752,10 @@ export function renderBattle(v: BattleView): string {
       </div>
       ${playerFx}
     </section>
-    ${renderRewardModal(s)}
+    ${renderLevelUpModal(s, ui)}
+    ${renderRewardModal(s, ui)}
     ${result}
+    ${ui.logOpen ? renderLogModal(s) : ''}
     ${ui.showWallModal ? renderWallModal(s, ui) : ''}
     ${ui.showYakuModal ? renderYakuModal(s) : ''}
   </main>`;
@@ -615,6 +767,7 @@ export {
   canMulliganHand,
   findRiichiDiscards,
   getRiichiWaits,
+  hasAnyPlayerDebuff,
   hasThreeSets,
   kanCandidates,
   kindName,

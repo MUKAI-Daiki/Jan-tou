@@ -1,14 +1,16 @@
 import { EQUIPMENTS, Rarity, getEquipment } from '../data/equipments';
-import { EXP_PER_LEVEL, MAX_STAGE, MONSTERS, MonsterDef, PLAYER_INITIAL_HP } from '../data/monsters';
+import { MAX_STAGE, MONSTERS, MonsterDef, PLAYER_INITIAL_HP, expForNextLevel } from '../data/monsters';
 import { Mentsu, canDeclareRiichi, canMulliganHand, findRiichiDiscards, hasThreeSets } from './mentsu';
 import { chooseMonsterSkill, rollMonsterDamage } from './monster';
 import { Rng } from './rng';
-import { AttackEval, ScoreContext, evaluateSelection } from './score';
+import { AttackEval, ScoreContext, effectiveTileMod, evaluateSelection } from './score';
 import {
   ACTIVE_KINDS,
   KIND_COUNT,
   Kind,
   Suit,
+  TILE_GROUP_LABEL,
+  TileGroup,
   TileId,
   TileMod,
   allTileIds,
@@ -16,6 +18,7 @@ import {
   isFive,
   isHonor,
   isSimple,
+  isWind,
   isYaochu,
   kindName,
   kindOf,
@@ -41,6 +44,8 @@ export interface BattleEvent {
 export interface PlayerBuffs {
   /** 白セット：次の敵ダメージを無効化 */
   nullifyDamage: boolean;
+  /** ガード：次の被ダメージを軽減する値 */
+  guardBarrier: number;
   /** 混一色：字牌が金牌として補充される残りターン */
   honiisouTurns: number;
   /** 平和：毎ターンHP自動回復の残りターン */
@@ -95,6 +100,10 @@ export interface BattleState {
   sealedTiles: Record<TileId, number>;
   /** 永続的に残り牌0になった牌種 */
   banishedKinds: Kind[];
+  /** レベルアップボーナスによる牌種別の基礎攻撃力加算値 */
+  bonusTileAtk: Record<TileGroup, number>;
+  /** 未選択のレベルアップボーナス回数 */
+  pendingLevelUps: number;
   player: {
     hp: number;
     maxHp: number;
@@ -138,8 +147,15 @@ export interface BattleState {
   events: BattleEvent[];
 }
 
+export type LevelUpBonusChoice =
+  | { type: 'hp_20' }
+  | { type: 'tile_atk_2'; group: TileGroup }
+  | { type: 'banish_kind'; kind: Kind };
+
 export type Action =
   | { type: 'attack'; tiles: TileId[]; melds: number[] }
+  | { type: 'guard'; tiles: TileId[]; melds: number[] }
+  | { type: 'cure_debuff' }
   | { type: 'kan'; kind: Kind }
   | { type: 'riichi'; discardTile?: TileId }
   | { type: 'cancel_riichi' }
@@ -148,7 +164,8 @@ export type Action =
   | { type: 'skill_reset_wall' }
   | { type: 'skill_copy'; targetTile: TileId; sourceTile: TileId }
   | { type: 'skill_search'; targetTile: TileId; kind: Kind }
-  | { type: 'choose_reward'; equipId: string };
+  | { type: 'choose_reward'; equipId: string }
+  | { type: 'choose_level_bonus'; bonus: LevelUpBonusChoice };
 
 export interface MonsterTurnStep {
   /** 敵行動の宣言テキスト（例：「牌スライムの「通常攻撃」！」） */
@@ -188,6 +205,17 @@ export function countActiveEquip(s: BattleState, id: string): number {
   return getActiveEquips(s).filter((e) => e === id).length;
 }
 
+export function hasAnyPlayerDebuff(s: BattleState): boolean {
+  return (
+    s.buffs.sealYakuTurns > 0 ||
+    s.buffs.atkDownTurns > 0 ||
+    s.buffs.slowTurns > 0 ||
+    s.buffs.venomTurns > 0 ||
+    Object.keys(s.sealedTiles).length > 0 ||
+    s.sealedEquipIndices.length > 0
+  );
+}
+
 export function buildScoreContext(s: BattleState): ScoreContext {
   return {
     level: s.player.level,
@@ -196,6 +224,7 @@ export function buildScoreContext(s: BattleState): ScoreContext {
     tileMods: s.tileMods,
     sealedTiles: s.sealedTiles,
     activeEquips: getActiveEquips(s),
+    bonusTileAtk: s.bonusTileAtk,
     sanankouTurns: s.buffs.sanankouTurns,
     sealYakuTurns: s.buffs.sealYakuTurns,
     slowTurns: s.buffs.slowTurns,
@@ -208,7 +237,7 @@ export function buildScoreContext(s: BattleState): ScoreContext {
   };
 }
 
-function isKindBanished(s: BattleState, k: Kind): boolean {
+export function isKindBanished(s: BattleState, k: Kind): boolean {
   if (s.banishedKinds.includes(k)) return true;
   const equips = getActiveEquips(s);
   if (isHonor(k) && equips.includes('no_honor_wall')) return true;
@@ -390,16 +419,17 @@ function gainExp(s: BattleState, rawAmount: number): void {
   if (rawAmount <= 0) return;
   const amount = Math.round(rawAmount * s.expMult);
   s.player.exp += amount;
-  while (s.player.exp >= EXP_PER_LEVEL) {
-    s.player.exp -= EXP_PER_LEVEL;
+  while (s.player.exp >= expForNextLevel(s.player.level)) {
+    s.player.exp -= expForNextLevel(s.player.level);
     s.player.level++;
+    s.pendingLevelUps++;
     s.player.maxHp = Math.round(s.player.maxHp * 1.1);
     const heal = Math.round(s.player.maxHp * 0.3);
     s.player.hp = Math.min(s.player.maxHp, s.player.hp + heal);
     s.events.push({ type: 'heal', target: 'player', amount: heal });
     s.log.push({
       side: 'system',
-      text: `レベルアップ！ Lv.${s.player.level} になった！（最大HP+10% ／ HP ${heal} 回復）`,
+      text: `レベルアップ！ Lv.${s.player.level} になった！（最大HP+10% ／ HP ${heal} 回復 ／ ボーナス選択+1）`,
     });
   }
 }
@@ -407,13 +437,14 @@ function gainExp(s: BattleState, rawAmount: number): void {
 function applyLevelUpDirect(s: BattleState, levels: number): void {
   for (let i = 0; i < levels; i++) {
     s.player.level++;
+    s.pendingLevelUps++;
     s.player.maxHp = Math.round(s.player.maxHp * 1.1);
     const heal = Math.round(s.player.maxHp * 0.3);
     s.player.hp = Math.min(s.player.maxHp, s.player.hp + heal);
   }
   s.log.push({
     side: 'system',
-    text: `字一色の効果でレベルが ${levels} 上がり、Lv.${s.player.level} になった！`,
+    text: `字一色の効果でレベルが ${levels} 上がり、Lv.${s.player.level} になった！（ボーナス選択+${levels}）`,
   });
 }
 
@@ -465,20 +496,31 @@ function rollRandomEquipments(
   count: number,
   minRarity: Rarity = 'common',
   forceAllowLegend = false,
+  maxRarity?: Rarity,
 ): string[] {
   const order: Rarity[] = ['common', 'uncommon', 'rare', 'legend'];
   const minIdx = order.indexOf(minRarity);
+  const maxIdx = maxRarity ? order.indexOf(maxRarity) : order.length - 1;
   const owned = new Set(s.equipments);
-  const canLegend = forceAllowLegend || s.stage >= 5 || minRarity === 'legend';
+  const canLegend = forceAllowLegend || s.stage >= 7 || minRarity === 'legend';
 
   let pool = EQUIPMENTS.filter(
     (e) =>
       !owned.has(e.id) &&
       order.indexOf(e.rarity) >= minIdx &&
+      order.indexOf(e.rarity) <= maxIdx &&
       (canLegend || e.rarity !== 'legend'),
   );
 
   // 未所持の該当レアリティ装備が足りない場合は未所持全体から補う
+  if (pool.length < count) {
+    pool = EQUIPMENTS.filter(
+      (e) =>
+        !owned.has(e.id) &&
+        order.indexOf(e.rarity) <= maxIdx &&
+        (canLegend || e.rarity !== 'legend'),
+    );
+  }
   if (pool.length < count) {
     pool = EQUIPMENTS.filter((e) => !owned.has(e.id) && (canLegend || e.rarity !== 'legend'));
   }
@@ -572,7 +614,7 @@ function executeSingleMonsterAction(
   }
 
   const dmgCutCount = countActiveEquip(s, 'dmg_cut_10');
-  const dmgCutMult = Math.pow(0.9, dmgCutCount);
+  const dmgCutMult = Math.pow(0.8, dmgCutCount);
   const riichiCutMult = s.riichi ? 0.5 : 1;
 
   const dealDamageToPlayer = (rawDmg: number, label: string) => {
@@ -582,17 +624,34 @@ function executeSingleMonsterAction(
       recordMonsterStep(s, steps, declareText, '→ 白セットの障壁がダメージを無効化した！');
       return;
     }
-    const dmg = Math.max(1, Math.round(rawDmg * chargeMult * dmgCutMult * riichiCutMult));
+    let dmg = Math.max(1, Math.round(rawDmg * chargeMult * dmgCutMult * riichiCutMult));
+    let guardNote = '';
+    if (s.buffs.guardBarrier > 0) {
+      const blocked = Math.min(dmg, s.buffs.guardBarrier);
+      dmg = Math.max(0, dmg - blocked);
+      s.buffs.guardBarrier = 0;
+      guardNote = `（ガードで -${blocked.toLocaleString()} 軽減！）`;
+    }
     s.player.hp = Math.max(0, s.player.hp - dmg);
-    s.events.push({ type: 'damage', target: 'player', amount: dmg });
+    if (dmg > 0) {
+      s.events.push({ type: 'damage', target: 'player', amount: dmg });
+    }
     const riichiNote = s.riichi ? '（リーチ中半減）' : '';
-    const effectText = `→ ${dmg.toLocaleString()} ダメージ${riichiNote}`;
-    gainExp(s, dmg);
+    const effectText = `→ ${dmg.toLocaleString()} ダメージ${riichiNote}${guardNote}`;
     checkPlayerDefeatOrRevive(s);
     recordMonsterStep(s, steps, declareText, effectText);
   };
 
   switch (skill.id) {
+    case 'idle': {
+      recordMonsterStep(
+        s,
+        steps,
+        `${def.name}の「様子見」…`,
+        '→ ぼーっとしていて何もしてこなかった！（0 ダメージ）',
+      );
+      break;
+    }
     case 'normal': {
       dealDamageToPlayer(rollMonsterDamage(def.atk, rng), '通常攻撃');
       break;
@@ -686,13 +745,21 @@ function executeSingleMonsterAction(
         recordMonsterStep(s, steps, declareText, '→ 白セットの障壁が無効化した！');
       } else {
         const baseDmg = Math.max(1, Math.floor(s.player.hp / 2));
-        const dmg = Math.max(1, Math.round(baseDmg * riichiCutMult));
+        let dmg = Math.max(1, Math.round(baseDmg * riichiCutMult));
+        let guardNote = '';
+        if (s.buffs.guardBarrier > 0) {
+          const blocked = Math.min(dmg, s.buffs.guardBarrier);
+          dmg = Math.max(0, dmg - blocked);
+          s.buffs.guardBarrier = 0;
+          guardNote = `（ガードで -${blocked.toLocaleString()} 軽減！）`;
+        }
         s.player.hp = Math.max(0, s.player.hp - dmg);
-        s.events.push({ type: 'damage', target: 'player', amount: dmg });
+        if (dmg > 0) {
+          s.events.push({ type: 'damage', target: 'player', amount: dmg });
+        }
         const riichiNote = s.riichi ? '（リーチ中半減）' : '';
-        gainExp(s, dmg);
         checkPlayerDefeatOrRevive(s);
-        recordMonsterStep(s, steps, declareText, `→ ${dmg.toLocaleString()} ダメージ${riichiNote}`);
+        recordMonsterStep(s, steps, declareText, `→ ${dmg.toLocaleString()} ダメージ${riichiNote}${guardNote}`);
       }
       break;
     }
@@ -820,10 +887,11 @@ function handleMonsterDefeated(s: BattleState, rng: Rng): void {
   s.log.push({ side: 'system', text: `${s.monster.def.name}を倒した！` });
   if (s.stage >= MAX_STAGE) {
     s.status = 'won';
-    s.log.push({ side: 'system', text: '全8連戦を制覇した！完全勝利！！' });
+    s.log.push({ side: 'system', text: `全${MAX_STAGE}連戦を制覇した！完全勝利！！` });
   } else {
     s.status = 'reward';
-    s.rewardChoices = rollRandomEquipments(s, rng, 3, 'common');
+    const maxRarity: Rarity | undefined = s.monster.def.commonOnlyReward ? 'common' : undefined;
+    s.rewardChoices = rollRandomEquipments(s, rng, 3, 'common', false, maxRarity);
     s.log.push({ side: 'system', text: '報酬の装備を3つの中から1つ選んでください' });
   }
 }
@@ -847,6 +915,8 @@ export function newBattle(defOrSeed?: MonsterDef | number, maybeSeed?: number): 
     tileMods: {},
     sealedTiles: {},
     banishedKinds: [],
+    bonusTileAtk: { m: 0, p: 0, s: 0, wind: 0, dragon: 0 },
+    pendingLevelUps: 0,
     player: {
       hp: PLAYER_INITIAL_HP,
       maxHp: PLAYER_INITIAL_HP,
@@ -872,6 +942,7 @@ export function newBattle(defOrSeed?: MonsterDef | number, maybeSeed?: number): 
     cooldowns: { resetWall: 0, copy: 0, search: 0 },
     buffs: {
       nullifyDamage: false,
+      guardBarrier: 0,
       honiisouTurns: 0,
       pinfuTurns: 0,
       sanankouTurns: 0,
@@ -909,6 +980,35 @@ export function step(prev: BattleState, action: Action): StepResult {
   const rng = new Rng(s.rng);
   const fail = (error: string): StepResult => ({ state: prev, error });
 
+  // レベルアップボーナス選択処理
+  if (action.type === 'choose_level_bonus') {
+    if (s.pendingLevelUps <= 0) return fail('選択可能なレベルアップボーナスがありません');
+    const b = action.bonus;
+    if (b.type === 'hp_20') {
+      s.player.maxHp += 20;
+      s.player.hp += 20;
+      s.events.push({ type: 'heal', target: 'player', amount: 20 });
+      s.log.push({ side: 'system', text: '【レベルアップボーナス】最大HP+20 を獲得した！' });
+    } else if (b.type === 'tile_atk_2') {
+      s.bonusTileAtk[b.group] = (s.bonusTileAtk[b.group] ?? 0) + 2;
+      s.log.push({
+        side: 'system',
+        text: `【レベルアップボーナス】${TILE_GROUP_LABEL[b.group]}の攻撃力+2 を獲得した！`,
+      });
+    } else if (b.type === 'banish_kind') {
+      if (isKindBanished(s, b.kind)) return fail('その牌はすでに残り牌0になっています');
+      s.banishedKinds.push(b.kind);
+      enforceWallRestrictions(s);
+      s.log.push({
+        side: 'system',
+        text: `【レベルアップボーナス】「${kindName(b.kind)}」の残り牌を永続的に0にした！`,
+      });
+    }
+    s.pendingLevelUps--;
+    s.rng = rng.state;
+    return { state: s };
+  }
+
   // 報酬選択画面での処理
   if (action.type === 'choose_reward') {
     if (s.status !== 'reward') return fail('現在は報酬選択中ではありません');
@@ -931,6 +1031,7 @@ export function step(prev: BattleState, action: Action): StepResult {
     s.revivedThisBattle = 0;
     s.healMode = false;
     s.expMult = 1;
+    s.buffs.guardBarrier = 0;
     s.enemyBuffs = { charged: false, defendTurns: 0, reflectTurns: 0 };
     s.rewardChoices = [];
     s.status = 'playing';
@@ -1059,10 +1160,121 @@ export function step(prev: BattleState, action: Action): StepResult {
       s.cooldowns.resetWall = 8;
       s.log.push({
         side: 'player',
-        text: `特殊行動「残り牌リセット」！ 全種の残り牌が補充された（${s.wall.length}枚）`,
+        text: `特殊行動「残り牌リセット」！ 永続的に0になった牌を除き、全種の残り牌が補充された（${s.wall.length}枚）`,
       });
       s.rng = rng.state;
       return { state: s };
+    }
+
+    case 'guard': {
+      if (s.riichi) return fail('リーチ中はガードできません');
+      const tiles = [...new Set(action.tiles)];
+      if (tiles.some((t) => !s.hand.includes(t))) return fail('手牌にない牌が含まれています');
+      if (tiles.some((t) => (s.sealedTiles[t] ?? 0) > 0)) return fail('封印されている牌は使えません');
+      const meldIdx = [...new Set(action.melds)];
+      if (meldIdx.some((i) => i < 0 || i >= s.melds.length)) return fail('カンの指定が不正です');
+      if (tiles.length === 0 && meldIdx.length === 0) return fail('ガードに使う牌を選んでください');
+      const melds = meldIdx.map((i) => s.melds[i]);
+      const ctx = buildScoreContext(s);
+      const ev = evaluateSelection(tiles, melds, ctx);
+      const guardAmount = Math.max(1, Math.round(ev.baseAttack));
+
+      const prevLogLen = s.log.length;
+      s.buffs.guardBarrier += guardAmount;
+      s.log.push({
+        side: 'player',
+        text: `ガード！ 基礎攻撃力 ${guardAmount.toLocaleString()} 分の障壁を展開！（次の被ダメージ -${s.buffs.guardBarrier.toLocaleString()}）`,
+      });
+
+      // 使用した手牌とカンを消費し補充（役は発動しない）
+      s.hand = s.hand.filter((t) => !tiles.includes(t));
+      for (const t of tiles) delete s.sealedTiles[t];
+      s.melds = s.melds.filter((_, i) => !meldIdx.includes(i));
+      s.drawn = [];
+      let needDraw = tiles.length + melds.length * 3;
+      while (needDraw > 0) {
+        drawOne(s, rng);
+        needDraw--;
+      }
+
+      const afterPlayerState = structuredClone(s);
+      const playerEvents = [...s.events];
+      const playerLogs = s.log.slice(prevLogLen);
+      s.events = [];
+      const monsterTurnSteps: MonsterTurnStep[] = [];
+      endPlayerTurnAndAdvance(s, rng, monsterTurnSteps);
+      s.rng = rng.state;
+      return {
+        state: s,
+        afterPlayerState,
+        playerEvents,
+        playerLogs,
+        monsterTurnSteps,
+      };
+    }
+
+    case 'cure_debuff': {
+      if (s.riichi) return fail('リーチ中は治療できません');
+      const activeDebuffs: Array<'seal_yaku' | 'atk_down' | 'slow' | 'venom' | 'seal_tiles' | 'seal_equip'> = [];
+      if (s.buffs.sealYakuTurns > 0) activeDebuffs.push('seal_yaku');
+      if (s.buffs.atkDownTurns > 0) activeDebuffs.push('atk_down');
+      if (s.buffs.slowTurns > 0) activeDebuffs.push('slow');
+      if (s.buffs.venomTurns > 0) activeDebuffs.push('venom');
+      if (Object.keys(s.sealedTiles).length > 0) activeDebuffs.push('seal_tiles');
+      if (s.sealedEquipIndices.length > 0) activeDebuffs.push('seal_equip');
+
+      if (activeDebuffs.length === 0) return fail('現在受けているデバフがありません');
+
+      const prevLogLen = s.log.length;
+      const picked = activeDebuffs[rng.int(activeDebuffs.length)];
+      let curedName = '';
+      switch (picked) {
+        case 'seal_yaku':
+          s.buffs.sealYakuTurns = 0;
+          curedName = '役封印';
+          break;
+        case 'atk_down':
+          s.buffs.atkDownTurns = 0;
+          curedName = '攻撃力ダウン';
+          break;
+        case 'slow':
+          s.buffs.slowTurns = 0;
+          curedName = '鈍化';
+          break;
+        case 'venom':
+          s.buffs.venomTurns = 0;
+          curedName = '猛毒';
+          break;
+        case 'seal_tiles':
+          s.sealedTiles = {};
+          curedName = '牌封印';
+          break;
+        case 'seal_equip':
+          s.sealedEquipIndices = [];
+          curedName = '装備封印';
+          break;
+      }
+
+      s.drawn = [];
+      s.log.push({
+        side: 'player',
+        text: `治療！ 攻撃を放棄し、デバフ「${curedName}」を解除した！`,
+      });
+
+      const afterPlayerState = structuredClone(s);
+      const playerEvents = [...s.events];
+      const playerLogs = s.log.slice(prevLogLen);
+      s.events = [];
+      const monsterTurnSteps: MonsterTurnStep[] = [];
+      endPlayerTurnAndAdvance(s, rng, monsterTurnSteps);
+      s.rng = rng.state;
+      return {
+        state: s,
+        afterPlayerState,
+        playerEvents,
+        playerLogs,
+        monsterTurnSteps,
+      };
     }
 
     case 'skill_copy': {
@@ -1137,7 +1349,7 @@ export function step(prev: BattleState, action: Action): StepResult {
       const chainLabel = s.chain > 0 ? ` [${s.chain} Chain]` : '';
       const riichiLabel = ev.isRiichiComplete ? ' [リーチ完成×2・補充30%金化]' : '';
 
-      // 治療モード判定
+      // 回復変換モード判定
       if (s.healMode) {
         s.healMode = false;
         const healAmount = ev.damage;
@@ -1145,7 +1357,7 @@ export function step(prev: BattleState, action: Action): StepResult {
         s.events.push({ type: 'heal', target: 'player', amount: healAmount });
         s.log.push({
           side: 'player',
-          text: `治療！${chainLabel} ${yakuText} → HPを ${healAmount.toLocaleString()} 回復した！`,
+          text: `回復変換！${chainLabel} ${yakuText} → HPを ${healAmount.toLocaleString()} 回復した！`,
         });
       } else {
         s.monster.hp = Math.max(0, s.monster.hp - ev.damage);
@@ -1174,7 +1386,6 @@ export function step(prev: BattleState, action: Action): StepResult {
             side: 'monster',
             text: `反射ダメージ！ あなたは ${reflectDmg.toLocaleString()} ダメージを受けた！`,
           });
-          gainExp(s, reflectDmg);
           if (checkPlayerDefeatOrRevive(s)) {
             s.rng = rng.state;
             return { state: s, attack: ev };
@@ -1182,11 +1393,33 @@ export function step(prev: BattleState, action: Action): StepResult {
         }
       }
 
-      // 赤牌を役に含めて攻撃した場合、その場でボーナス経験値を獲得
-      if (ev.yaku.length > 0 && ev.redCount > 0) {
-        const bonusExp = 150 * ev.redCount;
-        s.log.push({ side: 'system', text: `赤牌ボーナス！ 経験値 +${bonusExp * s.expMult} を獲得！` });
-        gainExp(s, bonusExp);
+      // 役成立ボーナス経験値（1セット役 < 2セット役 < 3セット役 < 役満相当役）
+      if (ev.yakuExp > 0) {
+        const gainedYakuExp = Math.round(ev.yakuExp * s.expMult);
+        s.log.push({
+          side: 'system',
+          text: `【役成立ボーナス】${yakuText} により経験値 +${gainedYakuExp.toLocaleString()} を獲得！`,
+        });
+        gainExp(s, ev.yakuExp);
+      }
+
+      // 赤牌を攻撃に使用した場合（役に含めなくてよい）、同じ種類の牌の基礎攻撃力+5（永続）
+      if (ev.redCount > 0) {
+        const activeEquipsNow = getActiveEquips(s);
+        const allAttackTiles: TileId[] = [...tiles, ...melds.flatMap((m) => m.tiles)];
+        for (const t of allAttackTiles) {
+          if (effectiveTileMod(t, s.tileMods, activeEquipsNow) === 'red') {
+            const k = kindOf(t);
+            const st = suitOf(k);
+            const grp: TileGroup =
+              st === 'm' ? 'm' : st === 'p' ? 'p' : st === 's' ? 's' : isWind(k) ? 'wind' : 'dragon';
+            s.bonusTileAtk[grp] = (s.bonusTileAtk[grp] ?? 0) + 5;
+            s.log.push({
+              side: 'system',
+              text: `【赤牌効果】${TILE_GROUP_LABEL[grp]}の基礎攻撃力+5（永続）！`,
+            });
+          }
+        }
       }
 
       // 役の効果適用

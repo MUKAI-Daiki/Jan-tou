@@ -5,6 +5,7 @@ import {
   LogEntry,
   MonsterTurnStep,
   buildScoreContext,
+  hasAnyPlayerDebuff,
   newBattle,
   step,
 } from './core/battle';
@@ -18,15 +19,17 @@ import {
 } from './core/mentsu';
 import { randomSeed } from './core/rng';
 import { evaluateSelection } from './core/score';
-import { kindName, kindOf } from './core/tile';
+import { TileGroup, kindName, kindOf } from './core/tile';
 import { MONSTERS, MonsterDef } from './data/monsters';
 import { Preview, UiState, renderBattle, renderTitle } from './ui/render';
 
 const app = document.getElementById('app')!;
 
-const PLAYER_CHAR_MS = 22;
-const MONSTER_CHAR_MS = 44; // 敵の文字送りスピードを半分（間隔2倍）に
+const PLAYER_CHAR_MS = 44; // 文字送りスピードを半分（間隔2倍）に
+const MONSTER_CHAR_MS = 88; // 敵の文字送りスピードもさらに半分（間隔2倍）に
 const ENEMY_WAIT_MS = 300; // 敵ターンの各節目の0.3秒ウェイト
+const SLIDE_OUT_MS = 220; // 行移行時のスライドアウト時間
+const SLIDE_IN_WAIT_MS = 220; // 行移行時のスライドイン＆ウェイト時間
 
 let screen: 'title' | 'battle' = 'title';
 let state: BattleState | null = null;
@@ -48,6 +51,8 @@ const ui: UiState = {
   logOpen: false,
   liveLogText: '',
   liveLogSide: 'system',
+  liveLogTransition: 'idle',
+  levelBonusStep: 'root',
   message: '',
 };
 
@@ -68,6 +73,7 @@ function stopTypewriter() {
     phaseResetTimer = null;
   }
   ui.isEnemyTurnAnimating = false;
+  ui.liveLogTransition = 'idle';
   displayedState = null;
 }
 
@@ -91,6 +97,13 @@ function syncLiveLogHeaderDom() {
   }
   const textEl = document.getElementById('live-log-text');
   if (textEl) {
+    textEl.className = `live-text${
+      ui.liveLogTransition === 'out'
+        ? ' slide-out'
+        : ui.liveLogTransition === 'in'
+          ? ' slide-in'
+          : ''
+    }`;
     textEl.textContent = ui.liveLogText;
   }
 }
@@ -122,6 +135,42 @@ function typeString(
   tick();
 }
 
+/**
+ * 既存の行をスライドアウトさせ、新しい行をスライドイン＋ウェイトを入れてから文字送りを開始する
+ */
+function transitionAndTypeLine(
+  side: 'player' | 'monster' | 'system',
+  text: string,
+  charIntervalMs: number,
+  onBeforeSlideIn: (() => void) | null,
+  onDone: () => void,
+) {
+  const startSlideIn = () => {
+    ui.liveLogSide = side;
+    ui.liveLogText = '';
+    ui.liveLogTransition = 'in';
+    if (onBeforeSlideIn) {
+      onBeforeSlideIn();
+    }
+    syncCombatPhaseDom();
+    syncLiveLogHeaderDom();
+
+    typewriterTimer = window.setTimeout(() => {
+      ui.liveLogTransition = 'idle';
+      syncLiveLogHeaderDom();
+      typeString(text, charIntervalMs, '', onDone);
+    }, SLIDE_IN_WAIT_MS);
+  };
+
+  if (ui.liveLogText.length > 0) {
+    ui.liveLogTransition = 'out';
+    syncLiveLogHeaderDom();
+    typewriterTimer = window.setTimeout(startSlideIn, SLIDE_OUT_MS);
+  } else {
+    startSlideIn();
+  }
+}
+
 function enqueueLogs(entries: LogEntry[], onAllDone?: () => void) {
   if (entries.length === 0) {
     if (onAllDone) onAllDone();
@@ -137,22 +186,18 @@ function playNextLogInQueue(onAllDone?: () => void) {
     return;
   }
   const entry = logQueue.shift()!;
-  ui.liveLogSide = entry.side;
-  ui.liveLogText = '';
   if (entry.side === 'player') {
     ui.combatPhase = 'player';
   } else if (entry.side === 'monster') {
     ui.combatPhase = 'monster';
   }
-  syncCombatPhaseDom();
-  syncLiveLogHeaderDom();
 
   const speed = entry.side === 'monster' ? MONSTER_CHAR_MS : PLAYER_CHAR_MS;
-  typeString(entry.text, speed, '', () => {
+  transitionAndTypeLine(entry.side, entry.text, speed, null, () => {
     if (logQueue.length > 0) {
-      typewriterTimer = window.setTimeout(() => playNextLogInQueue(onAllDone), 260);
+      typewriterTimer = window.setTimeout(() => playNextLogInQueue(onAllDone), 340);
     } else if (onAllDone) {
-      onAllDone();
+      typewriterTimer = window.setTimeout(onAllDone, 280);
     } else {
       typewriterTimer = null;
       phaseResetTimer = window.setTimeout(() => {
@@ -179,27 +224,28 @@ function playMonsterTurnSequence(steps: MonsterTurnStep[], onComplete: () => voi
 
     const mStep = steps[stepIdx++];
     ui.combatPhase = 'monster';
-    ui.liveLogSide = 'monster';
-    ui.liveLogText = '';
     syncCombatPhaseDom();
-    syncLiveLogHeaderDom();
 
     // 1. 敵行動開始 -> メッセージ表示開始 の 0.3秒ウェイト
     typewriterTimer = window.setTimeout(() => {
-      // 敵行動宣言メッセージを文字送り（通常の半分のスピード）
-      typeString(mStep.declareText, MONSTER_CHAR_MS, '', () => {
+      // スライドアウト・スライドイン＋ウェイトを入れて敵行動宣言を文字送り
+      transitionAndTypeLine('monster', mStep.declareText, MONSTER_CHAR_MS, null, () => {
         // 2. ダメージ or デバフ 表示前 の 0.3秒ウェイト
         typewriterTimer = window.setTimeout(() => {
-          // ダメージまたはデバフの状態＆赤字ダメージポップアップをUIに反映
-          displayedState = mStep.stateAfterEffect;
-          pendingEvents = mStep.events;
-          render();
-
-          // 続けて効果テキストを文字送り（通常の半分のスピード）
-          const prefix = mStep.declareText ? `${mStep.declareText} ` : '';
-          typeString(mStep.effectText, MONSTER_CHAR_MS, prefix, () => {
-            runNextMonsterStep();
-          });
+          // 行移行のスライドアウト・スライドインを入れつつ、ダメージ/デバフ状態＆赤字ポップアップを反映して結果行を文字送り
+          transitionAndTypeLine(
+            'monster',
+            mStep.effectText,
+            MONSTER_CHAR_MS,
+            () => {
+              displayedState = mStep.stateAfterEffect;
+              pendingEvents = mStep.events;
+              render();
+            },
+            () => {
+              runNextMonsterStep();
+            },
+          );
         }, ENEMY_WAIT_MS);
       });
     }, ENEMY_WAIT_MS);
@@ -231,7 +277,13 @@ function selectAllPlayableTiles(s: BattleState) {
 
 function checkAndScheduleAutoRiichi() {
   stopAutoRiichiTimer();
-  if (!state || screen !== 'battle' || state.status !== 'playing' || !state.riichi) {
+  if (
+    !state ||
+    screen !== 'battle' ||
+    state.status !== 'playing' ||
+    !state.riichi ||
+    state.pendingLevelUps > 0
+  ) {
     return;
   }
 
@@ -280,6 +332,7 @@ function computePreview(s: BattleState): Preview {
   const meldIdx = [...ui.selectedMelds];
   const canRiichi = !s.riichi && canDeclareRiichi(s.hand, s.melds);
   const canMulligan = s.turn === 1 && s.chain === 0 && s.mulligansUsed < 2 && canMulliganHand(s.hand);
+  const canCure = !s.riichi && !ui.riichiSelectMode && hasAnyPlayerDebuff(s);
 
   const kCands = kanCandidates(s.hand);
   const selectedKinds = new Set(tiles.map(kindOf));
@@ -293,6 +346,8 @@ function computePreview(s: BattleState): Preview {
   const none: Preview = {
     text: '',
     canAttack: false,
+    canGuard: false,
+    canCure,
     canKan,
     canRiichi,
     canConfirmRiichi: false,
@@ -362,9 +417,15 @@ function computePreview(s: BattleState): Preview {
     ctx,
   );
 
+  const hasSealedInSelection = tiles.some((t) => (s.sealedTiles[t] ?? 0) > 0);
+  const guardAmount = Math.max(1, Math.round(ev.baseAttack));
+  const canGuard = !s.riichi && !ui.riichiSelectMode && !hasSealedInSelection && (tiles.length > 0 || meldIdx.length > 0);
+
   if (!ev.valid) {
     return {
       ...none,
+      canGuard,
+      guardAmount,
       text: ev.reason ?? '攻撃できません',
       ev,
     };
@@ -397,14 +458,18 @@ function computePreview(s: BattleState): Preview {
         : '';
 
   const text = `${yakuStr} → ${ev.damage.toLocaleString()} ${actionWord}${chainNotice}`;
+  const yakuExpNote = ev.yakuExp > 0 ? ` ｜ 役EXP +${Math.round(ev.yakuExp * s.expMult)}` : '';
   const goldNote = ev.goldCount > 0 ? ` ｜ 金/赤牌×${ev.goldCount}(+${ev.goldCount * 50}%)` : '';
   const rainbowNote = ev.rainbowCount > 0 ? ` ｜ 虹牌×${ev.rainbowCount}` : '';
-  const subText = `構成: ${parts.join('・')} ｜ 牌攻撃力合計 ${ev.tilePower} + ボーナス ${ev.setBonus}${goldNote}${rainbowNote}`;
+  const subText = `構成: ${parts.join('・')} ｜ 基礎攻撃力 ${guardAmount}（牌 ${ev.tilePower} + ボーナス ${ev.setBonus}）${yakuExpNote}${goldNote}${rainbowNote}`;
 
   return {
     text,
     subText,
     canAttack: true,
+    canGuard,
+    canCure,
+    guardAmount,
     canKan,
     canRiichi,
     canConfirmRiichi: false,
@@ -497,6 +562,7 @@ function startBattle(def: MonsterDef) {
   ui.logOpen = false;
   ui.showWallModal = false;
   ui.showYakuModal = false;
+  ui.levelBonusStep = 'root';
   render();
   enqueueLogs(state.log);
 }
@@ -528,8 +594,49 @@ app.addEventListener('click', (e) => {
     return;
   }
   if (actionEl?.dataset.action === 'toggle-log') {
+    if (actionEl.classList.contains('overlay') && target.closest('[data-stop]')) return;
     ui.logOpen = !ui.logOpen;
     render();
+    return;
+  }
+  if (actionEl?.dataset.action === 'level-bonus-hp') {
+    ui.levelBonusStep = 'root';
+    dispatch({ type: 'choose_level_bonus', bonus: { type: 'hp_20' } });
+    return;
+  }
+  if (actionEl?.dataset.action === 'level-bonus-group-menu') {
+    ui.levelBonusStep = 'select_group';
+    render();
+    return;
+  }
+  if (actionEl?.dataset.action === 'level-bonus-kind-menu') {
+    ui.levelBonusStep = 'select_kind';
+    render();
+    return;
+  }
+  if (actionEl?.dataset.action === 'level-bonus-back') {
+    ui.levelBonusStep = 'root';
+    render();
+    return;
+  }
+
+  const levelGroupEl = target.closest<HTMLElement>('[data-level-group]');
+  if (levelGroupEl?.dataset.levelGroup) {
+    ui.levelBonusStep = 'root';
+    dispatch({
+      type: 'choose_level_bonus',
+      bonus: { type: 'tile_atk_2', group: levelGroupEl.dataset.levelGroup as TileGroup },
+    });
+    return;
+  }
+
+  const levelBanishEl = target.closest<HTMLElement>('[data-level-banish-kind]');
+  if (levelBanishEl?.dataset.levelBanishKind !== undefined) {
+    ui.levelBonusStep = 'root';
+    dispatch({
+      type: 'choose_level_bonus',
+      bonus: { type: 'banish_kind', kind: Number(levelBanishEl.dataset.levelBanishKind) },
+    });
     return;
   }
 
@@ -607,6 +714,12 @@ app.addEventListener('click', (e) => {
   switch (el.dataset.action) {
     case 'attack':
       dispatch({ type: 'attack', tiles: [...ui.selected], melds: [...ui.selectedMelds] });
+      break;
+    case 'guard':
+      dispatch({ type: 'guard', tiles: [...ui.selected], melds: [...ui.selectedMelds] });
+      break;
+    case 'cure-debuff':
+      dispatch({ type: 'cure_debuff' });
       break;
     case 'kan': {
       const tiles = [...ui.selected];

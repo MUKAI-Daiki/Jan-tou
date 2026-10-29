@@ -81,23 +81,45 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 .monster-card .mname { font-size: 18px; margin: 4px 0; }
 .monster-card .mhp { color: var(--muted); font-size: 12px; }
 
-/* ---------- 戦闘画面 ---------- */
+/* ---------- 戦闘画面（画面全体に広がりボックスサイズを固定） ---------- */
 .battle {
   max-width: 1060px;
+  height: 100dvh;
+  max-height: 100dvh;
   margin: 0 auto;
-  padding: 14px;
+  padding: 12px 14px;
   display: grid;
-  gap: 10px;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 8px;
   border-radius: 14px;
+  overflow: hidden;
   transition: background 0.28s ease, box-shadow 0.28s ease;
 }
 .enemy, .player, .table, .wall, .log {
   background: var(--panel);
   border-radius: 10px;
-  padding: 12px 16px;
+  padding: 10px 16px;
   position: relative;
   border: 2px solid transparent;
   transition: background 0.28s ease, border-color 0.28s ease, box-shadow 0.28s ease;
+}
+.enemy {
+  height: 82px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.table {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  overflow: hidden;
+}
+.player {
+  height: 98px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 }
 
 /* 攻撃時（プレイヤー行動中）と被弾時（敵行動中）のUI色味変化 */
@@ -269,12 +291,15 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 .search-hint { color: var(--accent); font-weight: bold; margin-left: 8px; }
 .wall-grid { display: grid; grid-template-columns: repeat(9, 1fr); gap: 4px; }
 
-/* ---------- ライブメッセージ＆開閉式ログ ---------- */
+/* ---------- ライブメッセージ（高さ完全固定＆スライド演出） ---------- */
 .live-log-section {
   background: rgba(0, 0, 0, 0.48);
   border: 2px solid #3d6b55;
   border-radius: 10px;
-  padding: 12px 16px;
+  padding: 8px 14px;
+  height: 68px;
+  display: flex;
+  align-items: center;
   transition: border-color 0.2s, background 0.2s;
 }
 .live-log-section.side-monster {
@@ -289,29 +314,50 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   display: flex;
   align-items: center;
   gap: 12px;
+  width: 100%;
+  height: 100%;
 }
 .live-icon {
   font-size: 24px;
   line-height: 1;
   flex-shrink: 0;
 }
-.live-text {
+.live-text-viewport {
   flex: 1;
-  font-size: 19px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  position: relative;
+}
+.live-text {
+  width: 100%;
+  font-size: 18px;
   font-weight: bold;
-  line-height: 1.45;
-  min-height: 28px;
+  line-height: 1.3;
+  max-height: 48px;
+  overflow: hidden;
   letter-spacing: 0.02em;
   color: #fff;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.live-text.slide-out {
+  animation: liveSlideOut 0.22s ease-in forwards;
+}
+.live-text.slide-in {
+  animation: liveSlideIn 0.2s ease-out forwards;
+}
+@keyframes liveSlideOut {
+  0% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-18px); }
+}
+@keyframes liveSlideIn {
+  0% { opacity: 0; transform: translateY(18px); }
+  100% { opacity: 1; transform: translateY(0); }
 }
 .live-log-section.side-monster .live-text { color: #ffb4ab; }
 .live-log-section.side-player .live-text { color: #ffe082; }
-.live-log-section .log {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.12);
-}
 
 .riichi-auto-indicator {
   color: #fbbf24;
@@ -355,11 +401,13 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 .status-line {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
   font-size: 13px;
   color: var(--muted);
-  margin-bottom: 10px;
+  min-height: 30px;
+  max-height: 52px;
+  overflow: hidden;
 }
 .status-line .ready { color: var(--ok); }
 .status-line .chain-active { color: var(--accent); font-weight: bold; font-size: 14px; }
@@ -374,11 +422,12 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 .hand-row {
   display: flex;
   align-items: flex-end;
-  gap: 20px;
+  gap: 16px;
   flex-wrap: wrap;
+  height: calc(var(--tile-h) + 18px);
   min-height: calc(var(--tile-h) + 18px);
 }
-.hand { display: flex; gap: 4px; flex-wrap: wrap; }
+.hand { display: flex; gap: 4px; flex-wrap: nowrap; }
 .melds { display: flex; gap: 10px; flex-wrap: wrap; }
 .meld {
   display: flex;
@@ -392,16 +441,45 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 .meld.selected { border-color: var(--accent); transform: translateY(-8px); }
 
 .preview {
-  margin-top: 10px;
-  min-height: 36px;
-  font-size: 14.5px;
+  height: 54px;
+  min-height: 54px;
+  max-height: 54px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1.3;
   color: var(--muted);
 }
 .preview.ok { color: var(--accent); font-weight: bold; }
-.preview-sub { font-size: 12px; color: var(--muted); font-weight: normal; margin-top: 2px; }
-.message { color: var(--danger); font-size: 13px; margin-top: 4px; font-weight: bold; }
-.actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.preview-main {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.preview-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-weight: normal;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 15px;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+  min-height: 38px;
+  align-items: center;
+}
 .btn-attack { background: var(--accent); color: #1a1a1a; }
+.btn-guard { background: #38bdf8; color: #0f172a; }
+.btn-cure { background: #4ade80; color: #0f172a; }
 .btn-kan { background: #9fc5e8; }
 .btn-riichi { background: #f59e0b; color: #1a1a1a; }
 .btn-cancel-riichi { background: var(--danger); color: #fff; }
@@ -737,25 +815,58 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   margin-bottom: 12px;
 }
 
+.levelup-modal {
+  border-color: #4ade80;
+  box-shadow: 0 0 28px rgba(74, 222, 128, 0.3);
+}
+.banished-cell {
+  cursor: not-allowed;
+}
+.log-modal .log {
+  max-height: 60vh;
+}
+
 @media (max-width: 720px) {
-  :root { --tile-w: 35px; --tile-h: 50px; }
-  .battle { padding: 8px; gap: 6px; }
-  .enemy, .player, .table, .live-log-section { padding: 8px 10px; }
-  .enemy-head { gap: 6px; margin-bottom: 4px; }
-  .enemy-head .mname { font-size: 16px; }
-  .live-text { font-size: 15px; min-height: 22px; }
-  .live-icon { font-size: 20px; }
-  .status-line { gap: 6px; margin-bottom: 6px; font-size: 12px; }
-  .hand-row { min-height: calc(var(--tile-h) + 12px); gap: 10px; }
-  .preview { margin-top: 6px; min-height: 28px; font-size: 13px; }
-  .actions { gap: 5px; margin-top: 6px; }
-  .actions button { padding: 7px 11px; font-size: 12.5px; }
-  .player-head { font-size: 12.5px; gap: 6px; margin-bottom: 4px; }
-  .expbar { width: 150px; height: 14px; }
-  .equip-bar { margin-top: 5px; font-size: 11px; }
+  :root { --tile-w: 33px; --tile-h: 48px; }
+  .battle {
+    height: 100dvh;
+    max-height: 100dvh;
+    padding: 6px 8px;
+    gap: 5px;
+    grid-template-rows: 70px 56px 1fr 84px;
+  }
+  .enemy { height: 70px; padding: 6px 10px; }
+  .live-log-section { height: 56px; padding: 6px 10px; }
+  .live-text-viewport { height: 40px; }
+  .live-text { font-size: 14px; max-height: 40px; line-height: 1.3; }
+  .live-icon { font-size: 18px; }
+  .table { padding: 8px 10px; }
+  .player { height: 84px; padding: 6px 10px; }
+  .enemy-head { gap: 5px; margin-bottom: 2px; font-size: 12px; overflow: hidden; white-space: nowrap; }
+  .enemy-head .mname { font-size: 15px; }
+  .hpbar { height: 18px; }
+  .hptext { font-size: 11.5px; line-height: 18px; }
+  .status-line { gap: 5px; min-height: 26px; max-height: 44px; font-size: 11.5px; }
+  .hand-row { height: calc(var(--tile-h) + 12px); min-height: calc(var(--tile-h) + 12px); gap: 6px; }
+  .hand { gap: 2.5px; }
+  .tile.tsumo-gap { margin-left: 8px; }
+  .preview { height: 48px; min-height: 48px; max-height: 48px; font-size: 12px; }
+  .preview-sub { font-size: 10.5px; min-height: 13px; }
+  .actions { gap: 4px; margin-top: 2px; min-height: 30px; }
+  .actions button { padding: 6px 9px; font-size: 12px; }
+  .player-head { font-size: 12px; gap: 6px; margin-bottom: 2px; }
+  .expbar { width: 135px; height: 13px; }
+  .equip-bar {
+    margin-top: 2px;
+    font-size: 10.5px;
+    white-space: nowrap;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+  .equip-list { flex-wrap: nowrap; }
   .middle { grid-template-columns: 1fr; }
-  .tile .t { font-size: 16px; }
-  .tile .b { font-size: 11px; }
-  .s-p .t, .s-z .t { font-size: 20px; }
+  .tile .t { font-size: 15px; }
+  .tile .b { font-size: 10px; }
+  .s-p .t, .s-z .t { font-size: 19px; }
   .wall-modal { padding: 14px 16px; }
 }

@@ -53,6 +53,21 @@ export interface Yaku {
   suit?: Suit;
 }
 
+const YAKUMAN_IDS: ReadonlySet<YakuId> = new Set([
+  'daisangen',
+  'ryuuiisou',
+  'tsuuiisou',
+  'sankantsu',
+]);
+
+/** 役成立時の獲得経験値（1セット役 < 2セット役 < 3セット役 < 役満相当役） */
+export function calcYakuExpBonus(y: Yaku): number {
+  if (YAKUMAN_IDS.has(y.id)) return 1200;
+  if (y.tier === 3) return 500;
+  if (y.tier === 2 || y.tier === 'special') return 200;
+  return 80;
+}
+
 export interface JudgeContext {
   unlockedWinds?: ReadonlySet<Kind>;
   tanyaoUnlocked?: boolean;

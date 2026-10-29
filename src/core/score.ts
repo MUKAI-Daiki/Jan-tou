@@ -1,6 +1,7 @@
 import { Decomposition, Mentsu, decomposeSelection } from './mentsu';
 import {
   Kind,
+  TileGroup,
   TileId,
   TileMod,
   baseTileAttack,
@@ -8,10 +9,11 @@ import {
   isFive,
   isHonor,
   isTerminal,
+  isWind,
   kindOf,
   suitOf,
 } from './tile';
-import { JudgeContext, Yaku, judgeDecompositionYaku } from './yaku';
+import { JudgeContext, Yaku, calcYakuExpBonus, judgeDecompositionYaku } from './yaku';
 
 export const SET_BONUS = {
   koutsu: 20,
@@ -31,6 +33,8 @@ export interface ScoreContext extends JudgeContext {
   sealedTiles?: Readonly<Record<TileId, number>>;
   /** 有効な装備IDのリスト（装備封印されていないもの） */
   activeEquips?: readonly string[];
+  /** レベルアップボーナスによる牌種別の攻撃力加算 */
+  bonusTileAtk?: Readonly<Record<TileGroup, number>>;
   /** プレイヤーの持続バフ */
   sanankouTurns?: number;
   sealYakuTurns?: number;
@@ -61,12 +65,14 @@ export interface AttackEval {
   baseAttack: number;
   /** 金牌（＋赤牌）枚数 */
   goldCount: number;
-  /** 赤牌枚数（役に含まれた場合EXP獲得） */
+  /** 赤牌枚数（攻撃に使用すると同種牌の基礎攻撃力+5［永続］） */
   redCount: number;
   /** セットに含まれた虹牌枚数 */
   rainbowCount: number;
   /** 今回の攻撃で獲得する追加チェーン回数 */
   gainedChains: number;
+  /** 役成立による獲得ボーナス経験値（倍率補正前） */
+  yakuExp: number;
   /** リーチ3セット完成攻撃かどうか */
   isRiichiComplete: boolean;
   /** 最終ダメージ */
@@ -94,15 +100,21 @@ export function effectiveTileMod(
   return 'normal';
 }
 
-/** 1枚の牌の攻撃力（装備補正込み） */
-export function calcSingleTilePower(k: Kind, equips?: readonly string[]): number {
+/** 1枚の牌の攻撃力（装備補正・レベルアップボーナス込み） */
+export function calcSingleTilePower(
+  k: Kind,
+  equips?: readonly string[],
+  bonusTileAtk?: Readonly<Record<TileGroup, number>>,
+): number {
   let p = baseTileAttack(k);
   const s = suitOf(k);
-  if (s === 'm') p += 2 * countEquip(equips, 'atk_man_2');
-  if (s === 'p') p += 2 * countEquip(equips, 'atk_pin_2');
-  if (s === 's') p += 2 * countEquip(equips, 'atk_sou_2');
-  if (isHonor(k)) p += 2 * countEquip(equips, 'atk_honor_2');
-  if (isTerminal(k)) p += 2 * countEquip(equips, 'atk_term_2');
+  if (s === 'm') p += 5 * countEquip(equips, 'atk_man_2') + (bonusTileAtk?.m ?? 0);
+  if (s === 'p') p += 5 * countEquip(equips, 'atk_pin_2') + (bonusTileAtk?.p ?? 0);
+  if (s === 's') p += 5 * countEquip(equips, 'atk_sou_2') + (bonusTileAtk?.s ?? 0);
+  if (isHonor(k)) p += 5 * countEquip(equips, 'atk_honor_2');
+  if (isWind(k)) p += bonusTileAtk?.wind ?? 0;
+  if (isDragon(k)) p += bonusTileAtk?.dragon ?? 0;
+  if (isTerminal(k)) p += 5 * countEquip(equips, 'atk_term_2');
   return p;
 }
 
@@ -131,7 +143,10 @@ export function evaluateDecomposition(
   const yakuSealed = (ctx.sealYakuTurns ?? 0) > 0;
   const yaku = yakuSealed ? [] : rawYaku;
 
-  const tilePower = allTiles.reduce((sum, t) => sum + calcSingleTilePower(kindOf(t), equips), 0);
+  const tilePower = allTiles.reduce(
+    (sum, t) => sum + calcSingleTilePower(kindOf(t), equips, ctx.bonusTileAtk),
+    0,
+  );
 
   let setBonus = 0;
   for (const m of d.sets) {
@@ -219,6 +234,8 @@ export function evaluateDecomposition(
     gainedChains = 0;
   }
 
+  const yakuExp = yaku.reduce((sum, y) => sum + calcYakuExpBonus(y), 0);
+
   const baseEval: AttackEval = {
     valid: true,
     decomp: d,
@@ -231,6 +248,7 @@ export function evaluateDecomposition(
     redCount,
     rainbowCount,
     gainedChains,
+    yakuExp,
     isRiichiComplete,
     damage,
   };

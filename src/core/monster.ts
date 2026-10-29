@@ -7,6 +7,9 @@ const BOSS_IDS: EnemySkillId[] = ['half_hp', 'venom', 'triple_strike', 'break_ha
 
 /** モンスターの重み設定に従って行動スキルを1つ選ぶ（再帰的な連撃・神速の中で再び連撃・神速は選ばない） */
 export function chooseMonsterSkill(def: MonsterDef, rng: Rng, allowMultiStrike = true): EnemySkillDef {
+  if (def.idleChance && def.idleChance > 0 && rng.int(100) < def.idleChance) {
+    return ENEMY_SKILLS.idle;
+  }
   const catIdx = rng.weighted(def.weights);
   const categories: EnemySkillCategory[] = ['normal', 'basic', 'strong', 'boss'];
   const cat = categories[catIdx];

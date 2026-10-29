@@ -21,19 +21,19 @@ export const RARITY_LABEL: Record<Rarity, string> = {
 export const EQUIPMENTS: readonly EquipmentDef[] = [
   // ---- コモン ----
   { id: 'hp_up_10', name: '点棒の護符', rarity: 'common', desc: '最大HP+10%' },
-  { id: 'atk_man_2', name: '萬子の砥石', rarity: 'common', desc: '萬子すべての基礎攻撃力+2', suit: 'm' },
-  { id: 'atk_pin_2', name: '筒子の砥石', rarity: 'common', desc: '筒子すべての基礎攻撃力+2', suit: 'p' },
-  { id: 'atk_sou_2', name: '索子の砥石', rarity: 'common', desc: '索子すべての基礎攻撃力+2', suit: 's' },
-  { id: 'atk_honor_2', name: '字牌の刻印', rarity: 'common', desc: '字牌の基礎攻撃力+2' },
-  { id: 'atk_term_2', name: '老頭の刻印', rarity: 'common', desc: '1・9牌の基礎攻撃力+2' },
-  { id: 'dmg_cut_10', name: '卓布の盾', rarity: 'common', desc: '相手のダメージを-10%' },
+  { id: 'atk_man_2', name: '萬子の砥石', rarity: 'common', desc: '萬子すべての基礎攻撃力+5', suit: 'm' },
+  { id: 'atk_pin_2', name: '筒子の砥石', rarity: 'common', desc: '筒子すべての基礎攻撃力+5', suit: 'p' },
+  { id: 'atk_sou_2', name: '索子の砥石', rarity: 'common', desc: '索子すべての基礎攻撃力+5', suit: 's' },
+  { id: 'atk_honor_2', name: '字牌の刻印', rarity: 'common', desc: '字牌の基礎攻撃力+5' },
+  { id: 'atk_term_2', name: '老頭の刻印', rarity: 'common', desc: '1・9牌の基礎攻撃力+5' },
+  { id: 'dmg_cut_10', name: '卓布の盾', rarity: 'common', desc: '相手のダメージを-20%' },
 
   // ---- アンコモン ----
   {
     id: 'red_five_1',
     name: '赤五の宝珠',
     rarity: 'uncommon',
-    desc: '5の牌が各1つずつ赤牌になる（金牌効果＋役に含めて攻撃で即経験値獲得）',
+    desc: '5の牌が各1つずつ赤牌になる（金牌効果＋攻撃使用で同じ種類の牌の基礎攻撃力+5［永続］）',
   },
   { id: 'wind_east', name: '東風の紋章', rarity: 'uncommon', desc: '「東」の同牌セットが役になり、チェーン+2', windKind: 27 },
   { id: 'wind_south', name: '南風の紋章', rarity: 'uncommon', desc: '「南」の同牌セットが役になり、チェーン+2', windKind: 28 },
@@ -49,7 +49,7 @@ export const EQUIPMENTS: readonly EquipmentDef[] = [
     id: 'unlock_heal',
     name: '治癒の点棒',
     rarity: 'uncommon',
-    desc: '特殊行動「治療（次の攻撃ダメージを自分のHP回復に変換）」を解禁',
+    desc: '特殊行動「回復変換（次の攻撃ダメージを自分のHP回復に変換）」を解禁',
   },
   { id: 'regen_5', name: '再生の牌皿', rarity: 'uncommon', desc: '毎ターン、HPを5%回復する' },
   { id: 'draw_gold_10', name: '金箔のサイコロ', rarity: 'uncommon', desc: '補充牌が10%の確率で金牌になる' },
@@ -57,7 +57,7 @@ export const EQUIPMENTS: readonly EquipmentDef[] = [
     id: 'skill_reset_wall',
     name: '山積み直し機',
     rarity: 'uncommon',
-    desc: '特殊行動「残り牌リセット（全種の残り牌を4枚にする、CT:8ターン）」を解禁',
+    desc: '特殊行動「残り牌リセット（永続的に残り牌0の牌を除き、全種の残り牌を4枚にする、CT:8ターン）」を解禁',
   },
 
   // ---- レア ----
@@ -121,7 +121,12 @@ export const EQUIPMENTS: readonly EquipmentDef[] = [
   { id: 'no_pin_wall', name: '筒子封印の書', rarity: 'legend', desc: '筒子の残り牌が常に0になる', suit: 'p' },
   { id: 'no_sou_wall', name: '索子封印の書', rarity: 'legend', desc: '索子の残り牌が常に0になる', suit: 's' },
   { id: 'all_honor_gold', name: '黄金の字牌宮', rarity: 'legend', desc: '字牌がすべて金牌になる' },
-  { id: 'all_five_red', name: '真紅の五宝', rarity: 'legend', desc: '5の牌がすべて赤牌になる' },
+  {
+    id: 'all_five_red',
+    name: '真紅の五宝',
+    rarity: 'legend',
+    desc: '5の牌がすべて赤牌になる（金牌効果＋攻撃使用で同じ種類の牌の基礎攻撃力+5［永続］）',
+  },
   { id: 'draw_rainbow_10', name: '極彩色の天牌', rarity: 'legend', desc: '補充牌が10%の確率で虹牌になる' },
 ];
 
