@@ -55,6 +55,12 @@ export interface UiState {
   combatPhase: 'idle' | 'player' | 'monster';
   /** 敵ターン演出の進行中かどうか */
   isEnemyTurnAnimating?: boolean;
+  /** 補充牌のスライドイン＋フラッシュ演出中かどうか */
+  drawAnimActive?: boolean;
+  /** 敵撃破時の点滅→ダークアウト演出中かどうか */
+  isEnemyDefeatAnimating?: boolean;
+  /** レベルアップ時の発光＋「LV UP！」スライドイン演出中かどうか */
+  isLevelUpAnimating?: boolean;
   /** レベルアップボーナス選択モーダルのサブ画面状態 */
   levelBonusStep?: 'root' | 'select_group' | 'select_kind';
   message: string;
@@ -268,7 +274,15 @@ function renderEnemyBuffBadges(s: BattleState): string {
 }
 
 function renderLevelUpModal(s: BattleState, ui: UiState): string {
-  if (s.pendingLevelUps <= 0 || s.status === 'lost' || ui.isEnemyTurnAnimating) return '';
+  if (
+    s.pendingLevelUps <= 0 ||
+    s.status === 'lost' ||
+    ui.isEnemyTurnAnimating ||
+    ui.isEnemyDefeatAnimating ||
+    ui.isLevelUpAnimating
+  ) {
+    return '';
+  }
   const step = ui.levelBonusStep ?? 'root';
   const remNote = s.pendingLevelUps > 1 ? `（残${s.pendingLevelUps}回）` : '';
 
@@ -371,7 +385,15 @@ function renderLogModal(s: BattleState): string {
 }
 
 function renderRewardModal(s: BattleState, ui: UiState): string {
-  if (s.status !== 'reward' || s.pendingLevelUps > 0 || ui.isEnemyTurnAnimating) return '';
+  if (
+    s.status !== 'reward' ||
+    s.pendingLevelUps > 0 ||
+    ui.isEnemyTurnAnimating ||
+    ui.isEnemyDefeatAnimating ||
+    ui.isLevelUpAnimating
+  ) {
+    return '';
+  }
   const cards = s.rewardChoices
     .map((id) => {
       const eq = getEquipment(id);
@@ -501,6 +523,7 @@ export function renderBattle(v: BattleView): string {
       const cls = [
         ui.selected.has(t) ? 'selected' : '',
         isNew ? 'new' : '',
+        isNew && ui.drawAnimActive ? 'draw-in' : '',
         isSeparatedTsumo ? 'tsumo-gap' : '',
         riichiCls,
         orderIdx === 0 && ui.selectionOrder.length === 2 ? 'copy-target' : '',
@@ -516,13 +539,17 @@ export function renderBattle(v: BattleView): string {
     })
     .join('');
 
+  const isModalBlockedByAnim = Boolean(
+    ui.isEnemyTurnAnimating || ui.isEnemyDefeatAnimating || ui.isLevelUpAnimating,
+  );
+
   // 装備スキルの表示判定（現在使用可能なもののみ表示）
   const hasHealSkill = countActiveEquip(s, 'unlock_heal') > 0;
   const hasResetWallSkill = countActiveEquip(s, 'skill_reset_wall') > 0;
   const hasCopySkill = countActiveEquip(s, 'skill_copy') > 0;
   const hasSearchSkill = countActiveEquip(s, 'skill_search') > 0;
 
-  const canUseSkillsNow = !ui.isEnemyTurnAnimating && !s.riichi && !ui.riichiSelectMode && s.status === 'playing';
+  const canUseSkillsNow = !isModalBlockedByAnim && !s.riichi && !ui.riichiSelectMode && s.status === 'playing';
   const canToggleHealNow = canUseSkillsNow && hasHealSkill;
   const canResetWallNow = canUseSkillsNow && hasResetWallSkill && s.cooldowns.resetWall === 0;
   const canCopyNow = canUseSkillsNow && hasCopySkill && s.cooldowns.copy === 0 && ui.selectionOrder.length === 2;
@@ -531,13 +558,13 @@ export function renderBattle(v: BattleView): string {
 
   const playableHandCount = s.hand.filter((t) => !(s.sealedTiles[t] > 0)).length;
   const canSelectAll =
-    !ui.isEnemyTurnAnimating &&
+    !isModalBlockedByAnim &&
     !s.riichi &&
     !ui.riichiSelectMode &&
     playableHandCount > 0 &&
     (ui.selected.size < playableHandCount || ui.selectedMelds.size < s.melds.length);
   const canClearSelection =
-    !ui.isEnemyTurnAnimating &&
+    !isModalBlockedByAnim &&
     !s.riichi &&
     !ui.riichiSelectMode &&
     (ui.selected.size > 0 || ui.selectedMelds.size > 0);
@@ -556,7 +583,8 @@ export function renderBattle(v: BattleView): string {
           })
           .join('');
 
-  const sc = s.status === 'won' || s.status === 'lost' ? calculateScore(s) : null;
+  const sc =
+    !isModalBlockedByAnim && (s.status === 'won' || s.status === 'lost') ? calculateScore(s) : null;
   const result = sc
     ? `<div class="overlay"><div class="result ${s.status}">
           <h2>${s.status === 'won' ? `全${MAX_STAGE}連戦 制覇！！` : `第${s.stage}戦 敗北……`}</h2>
@@ -599,9 +627,18 @@ export function renderBattle(v: BattleView): string {
       : ui.combatPhase === 'monster'
         ? '<span class="phase-tag monster-tag">👾 敵の攻撃・被弾！</span>'
         : '';
+  const enemyDefeatCls = ui.isEnemyDefeatAnimating
+    ? ' enemy-defeating'
+    : s.monster.hp <= 0
+      ? ' enemy-darkout'
+      : '';
+  const playerLvUpCls = ui.isLevelUpAnimating ? ' player-levelup' : '';
+  const lvUpBanner = ui.isLevelUpAnimating
+    ? '<div class="lvup-banner"><span class="lvup-text">LV UP！</span></div>'
+    : '';
 
   return `<main class="battle${phaseCls}">
-    <section class="enemy${monsterHit}">
+    <section class="enemy${monsterHit}${enemyDefeatCls}">
       <div class="enemy-head">
         <span class="stage-badge">STAGE ${s.stage} / ${MAX_STAGE}</span>
         <span class="rank">${esc(s.monster.def.rank)}</span>
@@ -661,7 +698,7 @@ export function renderBattle(v: BattleView): string {
       </div>
       <div class="actions">
         ${
-          ui.isEnemyTurnAnimating
+          isModalBlockedByAnim
             ? ''
             : ui.riichiSelectMode
               ? `${
@@ -752,7 +789,7 @@ export function renderBattle(v: BattleView): string {
       </div>
     </section>
 
-    <section class="player${playerHit}">
+    <section class="player${playerHit}${playerLvUpCls}">
       <div class="player-head">
         <span>あなた（Lv.${s.player.level} ／ 攻撃補正 ×${(1 + s.player.level / 4).toFixed(2)}）</span>
         <span class="money-badge">💰 ${s.money.toLocaleString()} 銭</span>
@@ -763,6 +800,7 @@ export function renderBattle(v: BattleView): string {
         <span class="equip-label">所持装備：</span>
         <div class="equip-list">${equipBadges}</div>
       </div>
+      ${lvUpBanner}
     </section>
     ${renderLevelUpModal(s, ui)}
     ${renderRewardModal(s, ui)}

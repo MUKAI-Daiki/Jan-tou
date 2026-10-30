@@ -30,6 +30,10 @@ const MONSTER_CHAR_MS = 58; // 敵の文字送り速さを50%アップ（88ms �
 const ENEMY_WAIT_MS = 300; // 敵ターンの各節目の0.3秒ウェイト
 const SLIDE_OUT_MS = 220; // 行移行時のスライドアウト時間
 const SLIDE_IN_WAIT_MS = 220; // 行移行時のスライドイン＆ウェイト時間
+const ATTACK_OUT_MS = 180; // 攻撃牌の上方向スライド＋フェードアウト時間
+const DRAW_IN_MS = 300; // 補充牌の下方向スライドイン＋フラッシュ時間
+const ENEMY_DEFEAT_MS = 950; // 敵撃破時の点滅→ダークアウト演出時間
+const LEVEL_UP_MS = 950; // レベルアップ時の発光＋LV UP！スライドイン演出時間
 
 let screen: 'title' | 'battle' = 'title';
 let state: BattleState | null = null;
@@ -38,6 +42,9 @@ let pendingEvents: BattleState['events'] = [];
 let autoRiichiTimer: number | null = null;
 let typewriterTimer: number | null = null;
 let phaseResetTimer: number | null = null;
+let attackOutTimer: number | null = null;
+let drawAnimTimer: number | null = null;
+let transitionAnimTimer: number | null = null;
 let logQueue: LogEntry[] = [];
 
 const ui: UiState = {
@@ -48,6 +55,9 @@ const ui: UiState = {
   riichiSelectMode: false,
   combatPhase: 'idle',
   isEnemyTurnAnimating: false,
+  drawAnimActive: false,
+  isEnemyDefeatAnimating: false,
+  isLevelUpAnimating: false,
   logOpen: false,
   liveLogText: '',
   liveLogSide: 'system',
@@ -55,6 +65,15 @@ const ui: UiState = {
   levelBonusStep: 'root',
   message: '',
 };
+
+function isBusyAnimating(): boolean {
+  return Boolean(
+    ui.isEnemyTurnAnimating ||
+      ui.isEnemyDefeatAnimating ||
+      ui.isLevelUpAnimating ||
+      attackOutTimer !== null,
+  );
+}
 
 function stopAutoRiichiTimer() {
   if (autoRiichiTimer !== null) {
@@ -72,9 +91,36 @@ function stopTypewriter() {
     window.clearTimeout(phaseResetTimer);
     phaseResetTimer = null;
   }
+  if (attackOutTimer !== null) {
+    window.clearTimeout(attackOutTimer);
+    attackOutTimer = null;
+  }
+  if (drawAnimTimer !== null) {
+    window.clearTimeout(drawAnimTimer);
+    drawAnimTimer = null;
+  }
+  if (transitionAnimTimer !== null) {
+    window.clearTimeout(transitionAnimTimer);
+    transitionAnimTimer = null;
+  }
   ui.isEnemyTurnAnimating = false;
+  ui.drawAnimActive = false;
+  ui.isEnemyDefeatAnimating = false;
+  ui.isLevelUpAnimating = false;
   ui.liveLogTransition = 'idle';
   displayedState = null;
+}
+
+function triggerDrawInAnimation() {
+  if (drawAnimTimer !== null) {
+    window.clearTimeout(drawAnimTimer);
+  }
+  ui.drawAnimActive = true;
+  drawAnimTimer = window.setTimeout(() => {
+    drawAnimTimer = null;
+    ui.drawAnimActive = false;
+    document.querySelectorAll('.tile.draw-in').forEach((el) => el.classList.remove('draw-in'));
+  }, DRAW_IN_MS);
 }
 
 function syncCombatPhaseDom() {
@@ -282,7 +328,8 @@ function checkAndScheduleAutoRiichi() {
     screen !== 'battle' ||
     state.status !== 'playing' ||
     !state.riichi ||
-    state.pendingLevelUps > 0
+    state.pendingLevelUps > 0 ||
+    isBusyAnimating()
   ) {
     return;
   }
@@ -505,22 +552,87 @@ function render() {
   if (log) log.scrollTop = log.scrollHeight;
 }
 
+function scheduleDefeatAndLevelUpAnimations(
+  justDefeatedEnemy: boolean,
+  justLeveledUp: boolean,
+  onComplete: () => void,
+) {
+  if (justDefeatedEnemy) {
+    ui.isEnemyDefeatAnimating = true;
+    render();
+    transitionAnimTimer = window.setTimeout(() => {
+      transitionAnimTimer = null;
+      ui.isEnemyDefeatAnimating = false;
+      if (justLeveledUp) {
+        ui.isLevelUpAnimating = true;
+        render();
+        transitionAnimTimer = window.setTimeout(() => {
+          transitionAnimTimer = null;
+          ui.isLevelUpAnimating = false;
+          render();
+          onComplete();
+        }, LEVEL_UP_MS);
+      } else {
+        render();
+        onComplete();
+      }
+    }, ENEMY_DEFEAT_MS);
+    return;
+  }
+
+  if (justLeveledUp) {
+    ui.isLevelUpAnimating = true;
+    render();
+    transitionAnimTimer = window.setTimeout(() => {
+      transitionAnimTimer = null;
+      ui.isLevelUpAnimating = false;
+      render();
+      onComplete();
+    }, LEVEL_UP_MS);
+    return;
+  }
+
+  onComplete();
+}
+
 function dispatch(action: Action) {
-  if (!state || ui.isEnemyTurnAnimating) return;
+  if (!state || isBusyAnimating()) return;
   stopAutoRiichiTimer();
   stopTypewriter();
+  const prevState = state;
   const prevLogLen = state.log.length;
   const r = step(state, action);
   if (r.error) {
     ui.message = r.error;
     render();
-  } else {
+    return;
+  }
+
+  const applyStepResult = () => {
+    attackOutTimer = null;
     state = r.state;
     ui.message = '';
     ui.showWallModal = false;
     clearSelection();
 
-    // 敵ターンが発生した場合は、プレイヤーフェーズ -> 敵ターンフェーズ（0.3秒ウェイト×3＋文字送り半速＋赤字ダメージ表示）を順再生
+    const didDrawNewTiles =
+      r.state.drawn.length > 0 &&
+      (action.type === 'attack' ||
+        action.type === 'kan' ||
+        action.type === 'riichi' ||
+        action.type === 'mulligan');
+    if (didDrawNewTiles) {
+      triggerDrawInAnimation();
+    }
+
+    const justDefeatedEnemy =
+      prevState.status === 'playing' &&
+      (r.state.status === 'reward' || r.state.status === 'won');
+    const justLeveledUp =
+      r.state.player.level > prevState.player.level ||
+      r.state.pendingLevelUps > prevState.pendingLevelUps;
+
+    // 敵ターンが発生した場合は、プレイヤーフェーズ ->（必要に応じレベルアップ演出）-> 敵ターンフェーズを順再生
     if (r.monsterTurnSteps && r.monsterTurnSteps.length > 0 && r.afterPlayerState) {
       ui.isEnemyTurnAnimating = true;
       displayedState = r.afterPlayerState;
@@ -535,29 +647,66 @@ function dispatch(action: Action) {
           ui.combatPhase = 'idle';
           pendingEvents = r.state.events;
 
-          if (state && state.status === 'playing' && state.riichi && hasThreeSets(state.hand, state.melds)) {
-            selectAllPlayableTiles(state);
-          }
-          render();
-          checkAndScheduleAutoRiichi();
+          scheduleDefeatAndLevelUpAnimations(false, justLeveledUp, () => {
+            if (state && state.status === 'playing' && state.riichi && hasThreeSets(state.hand, state.melds)) {
+              selectAllPlayableTiles(state);
+            }
+            render();
+            checkAndScheduleAutoRiichi();
+          });
         });
       });
       return;
     }
 
     pendingEvents = r.state.events;
+    const newLogs = state.log.slice(prevLogLen);
+
+    if (justDefeatedEnemy || justLeveledUp) {
+      if (newLogs.length > 0) {
+        enqueueLogs(newLogs);
+      }
+      scheduleDefeatAndLevelUpAnimations(justDefeatedEnemy, justLeveledUp, () => {
+        if (state && state.status === 'playing' && state.riichi && hasThreeSets(state.hand, state.melds)) {
+          selectAllPlayableTiles(state);
+        }
+        render();
+        checkAndScheduleAutoRiichi();
+      });
+      return;
+    }
 
     // リーチ中に3セットが揃ったら自動で全選択する
     if (state.status === 'playing' && state.riichi && hasThreeSets(state.hand, state.melds)) {
       selectAllPlayableTiles(state);
     }
 
-    const newLogs = state.log.slice(prevLogLen);
     render();
     if (newLogs.length > 0) {
       enqueueLogs(newLogs);
     }
     checkAndScheduleAutoRiichi();
+  };
+
+  // 攻撃時（またはリーチ捨て牌時）は、使った牌を上方向にスライド・フェードアウトさせてから結果を反映
+  const outTiles =
+    action.type === 'attack'
+      ? action.tiles
+      : action.type === 'riichi' && action.discardTile !== undefined
+        ? [action.discardTile]
+        : [];
+  const outMelds = action.type === 'attack' ? action.melds : [];
+
+  if (outTiles.length > 0 || outMelds.length > 0) {
+    for (const t of outTiles) {
+      document.querySelector<HTMLElement>(`[data-tile="${t}"]`)?.classList.add('attack-out');
+    }
+    for (const m of outMelds) {
+      document.querySelector<HTMLElement>(`[data-meld="${m}"]`)?.classList.add('attack-out');
+    }
+    attackOutTimer = window.setTimeout(applyStepResult, ATTACK_OUT_MS);
+  } else {
+    applyStepResult();
   }
 }
 
@@ -683,7 +832,7 @@ app.addEventListener('click', (e) => {
   if (!state) return;
 
   if (el.dataset.tile !== undefined) {
-    if (state.status !== 'playing' || ui.isEnemyTurnAnimating) return;
+    if (state.status !== 'playing' || isBusyAnimating()) return;
     const t = Number(el.dataset.tile);
 
     // リーチ宣言モード中は、有効な捨て牌候補のみ単一選択で切り替え可能にする
@@ -712,7 +861,7 @@ app.addEventListener('click', (e) => {
   }
 
   if (el.dataset.meld !== undefined) {
-    if (state.status !== 'playing' || ui.riichiSelectMode || ui.isEnemyTurnAnimating) return;
+    if (state.status !== 'playing' || ui.riichiSelectMode || isBusyAnimating()) return;
     const i = Number(el.dataset.meld);
     if (ui.selectedMelds.has(i)) ui.selectedMelds.delete(i);
     else ui.selectedMelds.add(i);
@@ -739,7 +888,7 @@ app.addEventListener('click', (e) => {
       break;
     }
     case 'start-riichi-select': {
-      if (ui.isEnemyTurnAnimating) break;
+      if (isBusyAnimating()) break;
       const validDiscards = findRiichiDiscards(state.hand, state.melds);
       const currentSelected = [...ui.selected];
       ui.selectedMelds.clear();
@@ -791,7 +940,7 @@ app.addEventListener('click', (e) => {
       break;
     }
     case 'skill-search': {
-      if (ui.isEnemyTurnAnimating) break;
+      if (isBusyAnimating()) break;
       ui.searchMode = true;
       ui.showWallModal = true;
       ui.message = '';
@@ -799,14 +948,14 @@ app.addEventListener('click', (e) => {
       break;
     }
     case 'select-all': {
-      if (ui.isEnemyTurnAnimating) break;
+      if (isBusyAnimating()) break;
       selectAllPlayableTiles(state);
       ui.message = '';
       render();
       break;
     }
     case 'clear':
-      if (ui.isEnemyTurnAnimating) break;
+      if (isBusyAnimating()) break;
       clearSelection();
       ui.message = '';
       render();

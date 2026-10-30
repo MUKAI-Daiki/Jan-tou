@@ -593,6 +593,157 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   outline-offset: 1px;
   box-shadow: 0 3px 0 #b9ae8e, 0 0 12px rgba(56, 189, 248, 0.75);
 }
+
+/* 1. 攻撃時の牌：短く「上方向にスライド・フェードアウト」を同時に */
+.tile.attack-out,
+.meld.attack-out {
+  animation: tileAttackOut 0.18s ease-in forwards !important;
+  pointer-events: none;
+}
+@keyframes tileAttackOut {
+  0% {
+    opacity: 1;
+    transform: translateY(-10px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-34px) scale(0.92);
+  }
+}
+
+/* 2. 牌補充時：短く「下方向にスライドイン＋フラッシュ」 */
+.tile.draw-in {
+  animation: tileDrawIn 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+@keyframes tileDrawIn {
+  0% {
+    opacity: 0;
+    transform: translateY(-24px) scale(1.06);
+    filter: brightness(2.4) drop-shadow(0 0 14px #fff);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(2px) scale(1.02);
+    filter: brightness(1.85) drop-shadow(0 0 12px #fde047);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: brightness(1);
+  }
+}
+
+/* 3. 敵撃破時：敵情報表示ボックスが点滅からダークアウト */
+.enemy.enemy-defeating {
+  animation: enemyDefeatBlinkDark 0.95s ease-out forwards;
+}
+.enemy.enemy-darkout {
+  background: rgba(5, 8, 6, 0.92) !important;
+  border-color: rgba(255, 255, 255, 0.06) !important;
+  filter: brightness(0.18) grayscale(1);
+  opacity: 0.25;
+}
+@keyframes enemyDefeatBlinkDark {
+  0% {
+    filter: brightness(2.6);
+    background: rgba(255, 255, 255, 0.75);
+    transform: translateX(-6px);
+  }
+  10% {
+    filter: brightness(0.3);
+    background: rgba(180, 20, 20, 0.85);
+    transform: translateX(6px);
+  }
+  20% {
+    filter: brightness(2.8);
+    background: rgba(255, 230, 150, 0.85);
+    transform: translateX(-5px);
+  }
+  30% {
+    filter: brightness(0.25);
+    background: rgba(120, 10, 10, 0.85);
+    transform: translateX(5px);
+  }
+  42% {
+    filter: brightness(2.4);
+    background: rgba(255, 255, 255, 0.7);
+    transform: translateX(0);
+    opacity: 1;
+  }
+  70% {
+    filter: brightness(0.22) grayscale(0.85);
+    background: rgba(8, 10, 9, 0.92);
+    opacity: 0.45;
+  }
+  100% {
+    filter: brightness(0.15) grayscale(1);
+    background: rgba(4, 6, 5, 0.96);
+    border-color: rgba(255, 255, 255, 0.05);
+    opacity: 0.2;
+  }
+}
+
+/* 4. レベルアップ時：プレイヤー情報ボックスが光り、「LV UP！」が大きくスライドイン */
+.player.player-levelup {
+  animation: playerLevelUpGlow 0.95s ease-out forwards;
+  overflow: hidden;
+}
+@keyframes playerLevelUpGlow {
+  0% {
+    border-color: #fde047;
+    background: rgba(250, 204, 21, 0.48);
+    box-shadow: 0 0 36px rgba(250, 204, 21, 0.95), inset 0 0 28px rgba(250, 204, 21, 0.65);
+  }
+  50% {
+    border-color: #fef08a;
+    background: rgba(74, 222, 128, 0.38);
+    box-shadow: 0 0 44px rgba(74, 222, 128, 0.9), inset 0 0 24px rgba(250, 204, 21, 0.55);
+  }
+  100% {
+    border-color: #4ade80;
+    background: rgba(30, 65, 45, 0.55);
+    box-shadow: 0 0 22px rgba(74, 222, 128, 0.65);
+  }
+}
+.lvup-banner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 18;
+  background: radial-gradient(ellipse at center, rgba(250, 204, 21, 0.28) 0%, transparent 75%);
+}
+.lvup-text {
+  font-size: 46px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: #fef08a;
+  text-shadow:
+    0 0 14px #f59e0b,
+    0 0 28px rgba(250, 204, 21, 0.95),
+    0 4px 10px rgba(0, 0, 0, 0.95);
+  animation: lvUpSlideIn 0.92s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
+}
+@keyframes lvUpSlideIn {
+  0% {
+    opacity: 0;
+    transform: translateX(-90px) scale(0.65);
+  }
+  38% {
+    opacity: 1;
+    transform: translateX(6px) scale(1.14);
+  }
+  65% {
+    opacity: 1;
+    transform: translateX(0) scale(1.04);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
 /* リーチ中の右端自摸牌はスペースを空けて分離表示 */
 .tile.tsumo-gap {
   margin-left: 16px;
