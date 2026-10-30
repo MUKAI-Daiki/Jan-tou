@@ -1,6 +1,15 @@
-import { EQUIPMENTS, RARITY_SCORE, Rarity, getEquipment } from '../data/equipments';
-import { MAX_STAGE, MONSTERS, MonsterDef, PLAYER_INITIAL_HP, expForNextLevel } from '../data/monsters';
-import { Mentsu, canDeclareRiichi, canMulliganHand, findRiichiDiscards, hasThreeSets } from './mentsu';
+import {
+  EQUIPMENTS,
+  JobId,
+  RARITY_SCORE,
+  Rarity,
+  getEquipment,
+  getEquipmentBuyPrice,
+  getEquipmentSellPrice,
+  getJobDef,
+} from '../data/equipments';
+import { ENEMY_SKILLS, MAX_STAGE, MONSTERS, MonsterDef, PLAYER_INITIAL_HP, expForNextLevel } from '../data/monsters';
+import { Mentsu, canDeclareRiichi, findRiichiDiscards, hasThreeSets } from './mentsu';
 import { chooseMonsterSkill, rollMonsterDamage } from './monster';
 import { Rng } from './rng';
 import { AttackEval, ScoreContext, effectiveTileMod, evaluateSelection } from './score';
@@ -88,6 +97,8 @@ export interface BattleState {
   rng: number;
   uid: number;
   stage: number;
+  /** プレイヤーの職業 */
+  job: JobId;
   /** 残り牌 */
   wall: TileId[];
   /** 手牌 */
@@ -106,6 +117,8 @@ export interface BattleState {
   bonusTileAtk: Record<TileGroup, number>;
   /** 未選択のレベルアップボーナス回数 */
   pendingLevelUps: number;
+  /** レベルアップボーナス選択完了後に敵ターンを実行するかどうか */
+  pendingMonsterTurn?: boolean;
   /** 所持している「銭」 */
   money: number;
   /** ゲーム終了時のスコアから獲得したボーナス銭 */
@@ -136,10 +149,8 @@ export interface BattleState {
   nextChainMult: number;
   /** リーチ宣言中かどうか */
   riichi: boolean;
-  /** リーチ中にこのターン入れ替えた枚数（1ターン最大3枚まで入れ替え可能） */
+  /** リーチ中にこのターン入れ替えた枚数（通常3枚、雀老師は4枚まで入れ替え可能） */
   riichiSwapsThisTurn: number;
-  /** このバトルで使用したマリガン回数（最大2回） */
-  mulligansUsed: number;
   /** このバトルで発動した敗北回避回数 */
   revivedThisBattle: number;
   /** 特殊行動「治療」がONかどうか */
@@ -151,8 +162,12 @@ export interface BattleState {
   enemyBuffs: EnemyBuffs;
   /** バトル勝利後の装備報酬3択 */
   rewardChoices: string[];
+  /** 商店に並んでいる商品（装備ID一覧） */
+  shopItems: string[];
+  /** 今回の商店滞在中にHP回復を購入済みか */
+  shopHealUsed: boolean;
   resets: number;
-  status: 'playing' | 'reward' | 'won' | 'lost';
+  status: 'playing' | 'reward' | 'shop' | 'won' | 'lost';
   log: LogEntry[];
   events: BattleEvent[];
 }
@@ -209,6 +224,7 @@ function gainMoney(s: BattleState, amount: number, reason: string): void {
 }
 
 export type LevelUpBonusChoice =
+  | { type: 'hp_100' }
   | { type: 'hp_20' }
   | { type: 'tile_atk_2'; group: TileGroup }
   | { type: 'banish_kind'; kind: Kind };
@@ -220,13 +236,16 @@ export type Action =
   | { type: 'kan'; kind: Kind }
   | { type: 'riichi'; discardTile?: TileId }
   | { type: 'cancel_riichi' }
-  | { type: 'mulligan' }
   | { type: 'toggle_heal' }
   | { type: 'skill_reset_wall' }
   | { type: 'skill_copy'; targetTile: TileId; sourceTile: TileId }
   | { type: 'skill_search'; targetTile: TileId; kind: Kind }
   | { type: 'choose_reward'; equipId: string }
-  | { type: 'choose_level_bonus'; bonus: LevelUpBonusChoice };
+  | { type: 'choose_level_bonus'; bonus: LevelUpBonusChoice }
+  | { type: 'buy_shop_item'; equipId: string }
+  | { type: 'sell_equip'; equipIndex: number }
+  | { type: 'buy_shop_heal' }
+  | { type: 'leave_shop' };
 
 export interface MonsterTurnStep {
   /** 敵行動の宣言テキスト（例：「牌スライムの「通常攻撃」！」） */
@@ -257,6 +276,11 @@ export interface StepResult {
 // ヘルパー関数
 // ---------------------------------------------------------------------------
 
+/** リーチ中に1ターンあたり入れ替えられる最大枚数（雀老師は4枚、それ以外は3枚） */
+export function getRiichiMaxSwaps(s: BattleState): number {
+  return s.job === 'master' ? 4 : 3;
+}
+
 export function getActiveEquips(s: BattleState): string[] {
   const sealed = new Set(s.sealedEquipIndices);
   return s.equipments.filter((_, idx) => !sealed.has(idx));
@@ -279,6 +303,7 @@ export function hasAnyPlayerDebuff(s: BattleState): boolean {
 
 export function buildScoreContext(s: BattleState): ScoreContext {
   return {
+    job: s.job,
     level: s.player.level,
     chain: s.chain,
     nextChainMult: s.nextChainMult,
@@ -480,33 +505,34 @@ function gainExp(s: BattleState, rawAmount: number): void {
   if (rawAmount <= 0) return;
   const amount = Math.round(rawAmount * s.expMult);
   s.player.exp += amount;
+  const bannerCount = countActiveEquip(s, 'banner_heal_20');
   while (s.player.exp >= expForNextLevel(s.player.level)) {
     s.player.exp -= expForNextLevel(s.player.level);
     s.player.level++;
     s.pendingLevelUps++;
-    s.player.maxHp = Math.round(s.player.maxHp * 1.1);
-    const heal = Math.round(s.player.maxHp * 0.3);
-    s.player.hp = Math.min(s.player.maxHp, s.player.hp + heal);
-    s.events.push({ type: 'heal', target: 'player', amount: heal });
-    s.log.push({
-      side: 'system',
-      text: `レベルアップ！ Lv.${s.player.level} になった！（最大HP+10% ／ HP ${heal} 回復 ／ ボーナス選択+1）`,
-    });
+    if (bannerCount > 0) {
+      const heal = Math.max(1, Math.round(s.player.maxHp * 0.2 * bannerCount));
+      s.player.hp = Math.min(s.player.maxHp, s.player.hp + heal);
+      s.events.push({ type: 'heal', target: 'player', amount: heal });
+    }
   }
 }
 
 function applyLevelUpDirect(s: BattleState, levels: number): void {
+  const bannerCount = countActiveEquip(s, 'banner_heal_20');
+  let totalHeal = 0;
   for (let i = 0; i < levels; i++) {
     s.player.level++;
     s.pendingLevelUps++;
-    s.player.maxHp = Math.round(s.player.maxHp * 1.1);
-    const heal = Math.round(s.player.maxHp * 0.3);
-    s.player.hp = Math.min(s.player.maxHp, s.player.hp + heal);
+    if (bannerCount > 0) {
+      const heal = Math.max(1, Math.round(s.player.maxHp * 0.2 * bannerCount));
+      s.player.hp = Math.min(s.player.maxHp, s.player.hp + heal);
+      totalHeal += heal;
+    }
   }
-  s.log.push({
-    side: 'system',
-    text: `字一色の効果でレベルが ${levels} 上がり、Lv.${s.player.level} になった！（ボーナス選択+${levels}）`,
-  });
+  if (totalHeal > 0) {
+    s.events.push({ type: 'heal', target: 'player', amount: totalHeal });
+  }
 }
 
 function grantEquipment(s: BattleState, equipId: string, rng: Rng): void {
@@ -676,7 +702,10 @@ function executeSingleMonsterAction(
 ): void {
   if (s.status !== 'playing' || s.monster.hp <= 0) return;
   const def = s.monster.def;
-  const skill = chooseMonsterSkill(def, rng, allowMultiStrike);
+  // 「ためる」の後は、必ず「通常攻撃」を行う
+  const skill = s.enemyBuffs.charged
+    ? ENEMY_SKILLS.normal
+    : chooseMonsterSkill(def, rng, allowMultiStrike);
 
   const chargeMult = s.enemyBuffs.charged ? 3 : 1;
   // ためる以外の行動をしたら溜め状態を消費
@@ -686,7 +715,8 @@ function executeSingleMonsterAction(
 
   const dmgCutCount = countActiveEquip(s, 'dmg_cut_10');
   const dmgCutMult = Math.pow(0.8, dmgCutCount);
-  const riichiCutMult = s.riichi ? 0.5 : 1;
+  // リーチ時のダメージ半減は「雀老師（master）」のみ発動
+  const riichiCutMult = s.riichi && s.job === 'master' ? 0.5 : 1;
 
   const dealDamageToPlayer = (rawDmg: number, label: string) => {
     const declareText = `${def.name}の「${label}」！`;
@@ -707,7 +737,7 @@ function executeSingleMonsterAction(
     if (dmg > 0) {
       s.events.push({ type: 'damage', target: 'player', amount: dmg });
     }
-    const riichiNote = s.riichi ? '（リーチ中半減）' : '';
+    const riichiNote = s.riichi && s.job === 'master' ? '（雀老師リーチ中半減）' : '';
     const effectText = `→ ${dmg.toLocaleString()} ダメージ${riichiNote}${guardNote}`;
     checkPlayerDefeatOrRevive(s);
     recordMonsterStep(s, steps, declareText, effectText);
@@ -732,42 +762,41 @@ function executeSingleMonsterAction(
       break;
     }
     case 'seal_yaku': {
-      s.buffs.sealYakuTurns = Math.max(s.buffs.sealYakuTurns, 1);
+      s.buffs.sealYakuTurns += 1;
       recordMonsterStep(s, steps, `${def.name}の「封印」！`, '1ターンの間、役の効果発動が無効化された！');
       break;
     }
     case 'atk_down': {
-      s.buffs.atkDownTurns = Math.max(s.buffs.atkDownTurns, 3);
+      s.buffs.atkDownTurns += 3;
       recordMonsterStep(s, steps, `${def.name}の「攻撃力ダウン」！`, '3ターンの間、攻撃力合計に-10の補正！');
       dealDamageToPlayer(Math.round(rollMonsterDamage(def.atk, rng) * 0.6), '追撃');
       break;
     }
     case 'charge': {
       s.enemyBuffs.charged = true;
-      recordMonsterStep(s, steps, `${def.name}の「ためる」！`, '次のターンのダメージが3倍になる！');
+      recordMonsterStep(s, steps, `${def.name}の「ためる」！`, '次の通常攻撃のダメージが3倍になる！');
       break;
     }
     case 'defend': {
-      s.enemyBuffs.defendTurns = Math.max(s.enemyBuffs.defendTurns, 2);
+      s.enemyBuffs.defendTurns += 2;
       recordMonsterStep(s, steps, `${def.name}の「防御」！`, '2ターンの間、敵へのダメージが半減する！');
       break;
     }
     case 'slow': {
-      s.buffs.slowTurns = Math.max(s.buffs.slowTurns, 2);
+      s.buffs.slowTurns += 2;
       s.extraChains = 0;
       s.chain = 0;
       recordMonsterStep(s, steps, `${def.name}の「鈍化」！`, '装備効果を含めチェーンが完全に封じられた！');
       break;
     }
     case 'seal_tiles': {
-      const candidates = s.hand.filter((t) => !(s.sealedTiles[t] > 0));
-      const count = Math.min(3, candidates.length);
-      const pool = [...candidates];
+      const count = Math.min(3, s.hand.length);
+      const pool = [...s.hand];
       for (let i = 0; i < count; i++) {
         const idx = rng.int(pool.length);
         const t = pool[idx];
         pool.splice(idx, 1);
-        s.sealedTiles[t] = 2;
+        s.sealedTiles[t] = (s.sealedTiles[t] ?? 0) + 2;
       }
       const riichiBreakNote = count > 0 ? forceCancelRiichiNoPenalty(s) : '';
       recordMonsterStep(
@@ -806,7 +835,7 @@ function executeSingleMonsterAction(
       break;
     }
     case 'reflect': {
-      s.enemyBuffs.reflectTurns = Math.max(s.enemyBuffs.reflectTurns, 2);
+      s.enemyBuffs.reflectTurns += 2;
       recordMonsterStep(s, steps, `${def.name}の「反射」！`, '2ターンの間、受けたダメージの半分を跳ね返す！');
       break;
     }
@@ -829,14 +858,14 @@ function executeSingleMonsterAction(
         if (dmg > 0) {
           s.events.push({ type: 'damage', target: 'player', amount: dmg });
         }
-        const riichiNote = s.riichi ? '（リーチ中半減）' : '';
+        const riichiNote = s.riichi && s.job === 'master' ? '（雀老師リーチ中半減）' : '';
         checkPlayerDefeatOrRevive(s);
         recordMonsterStep(s, steps, declareText, `→ ${dmg.toLocaleString()} ダメージ${riichiNote}${guardNote}`);
       }
       break;
     }
     case 'venom': {
-      s.buffs.venomTurns = Math.max(s.buffs.venomTurns, 5);
+      s.buffs.venomTurns += 5;
       recordMonsterStep(
         s,
         steps,
@@ -976,18 +1005,92 @@ function handleMonsterDefeated(s: BattleState, rng: Rng): void {
   }
 }
 
+function pickUniqueEquipIds(
+  pool: readonly { id: string }[],
+  count: number,
+  rng: Rng,
+): string[] {
+  const arr = pool.map((e) => e.id);
+  const picked: string[] = [];
+  for (let i = 0; i < count && arr.length > 0; i++) {
+    const idx = rng.int(arr.length);
+    picked.push(arr[idx]);
+    arr.splice(idx, 1);
+  }
+  return picked;
+}
+
+function openShop(s: BattleState, rng: Rng): void {
+  const owned = new Set(s.equipments);
+  const cuPool = EQUIPMENTS.filter(
+    (e) => !owned.has(e.id) && (e.rarity === 'common' || e.rarity === 'uncommon'),
+  );
+  const rarePool = EQUIPMENTS.filter((e) => !owned.has(e.id) && e.rarity === 'rare');
+  const legendPool = EQUIPMENTS.filter((e) => !owned.has(e.id) && e.rarity === 'legend');
+
+  s.shopItems = [
+    ...pickUniqueEquipIds(cuPool, 4, rng),
+    ...pickUniqueEquipIds(rarePool, 2, rng),
+    ...pickUniqueEquipIds(legendPool, 1, rng),
+  ];
+  s.shopHealUsed = false;
+  s.rewardChoices = [];
+  s.status = 'shop';
+  s.log.push({
+    side: 'system',
+    text: '🏮 3試合終了！ 商店に到着しました（銭を使って装備購入・売却・HP回復が可能）',
+  });
+}
+
+function advanceToNextStage(s: BattleState, rng: Rng): void {
+  // 次のステージへ進行（手牌・カン・持続バフ・デバフ・残り牌状況を持ち越す）
+  const nextStage = Math.min(MAX_STAGE, s.stage + 1);
+  const nextDef = MONSTERS[nextStage - 1];
+  s.stage = nextStage;
+  s.monster = { def: nextDef, hp: nextDef.hp, maxHp: nextDef.hp };
+  s.turn = 1;
+  s.chain = 0;
+  // デバフ（sealedEquipIndices / buffs.* / sealedTiles）は次の敵へそのまま持ち越す
+  s.extraChains = s.buffs.slowTurns > 0 ? 0 : countActiveEquip(s, 'always_chain_1');
+  s.nextChainMult = 1;
+  s.riichi = false;
+  s.riichiSwapsThisTurn = 0;
+  s.revivedThisBattle = 0;
+  s.healMode = false;
+  s.expMult = 1;
+  s.buffs.guardBarrier = 0;
+  s.enemyBuffs = { charged: false, defendTurns: 0, reflectTurns: 0 };
+  s.rewardChoices = [];
+  s.shopItems = [];
+  s.shopHealUsed = false;
+  s.pendingMonsterTurn = false;
+  s.status = 'playing';
+
+  ensureStartDragonSet(s, rng);
+  s.log.push({
+    side: 'system',
+    text: `【${nextDef.rank}】${nextDef.name}（HP ${nextDef.hp}）が現れた！`,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // 公開API
 // ---------------------------------------------------------------------------
 
-export function newBattle(defOrSeed?: MonsterDef | number, maybeSeed?: number): BattleState {
+export function newBattle(
+  defOrSeed?: MonsterDef | number,
+  maybeSeed?: number,
+  job: JobId = 'sword',
+): BattleState {
   const firstDef = typeof defOrSeed === 'object' && defOrSeed !== null ? defOrSeed : MONSTERS[0];
   const seed = typeof defOrSeed === 'number' ? defOrSeed : (maybeSeed ?? 1);
+  const jobDef = getJobDef(job);
 
   const s: BattleState = {
     rng: seed,
     uid: 1,
     stage: firstDef.stage ?? 1,
+    job,
     wall: allTileIds(),
     hand: [],
     melds: [],
@@ -997,6 +1100,7 @@ export function newBattle(defOrSeed?: MonsterDef | number, maybeSeed?: number): 
     banishedKinds: [],
     bonusTileAtk: { m: 0, p: 0, s: 0, wind: 0, dragon: 0 },
     pendingLevelUps: 0,
+    pendingMonsterTurn: false,
     money: 0,
     scoreBonusMoney: 0,
     yakuHistory: [],
@@ -1019,7 +1123,6 @@ export function newBattle(defOrSeed?: MonsterDef | number, maybeSeed?: number): 
     nextChainMult: 1,
     riichi: false,
     riichiSwapsThisTurn: 0,
-    mulligansUsed: 0,
     revivedThisBattle: 0,
     healMode: false,
     expMult: 1,
@@ -1044,9 +1147,16 @@ export function newBattle(defOrSeed?: MonsterDef | number, maybeSeed?: number): 
       reflectTurns: 0,
     },
     rewardChoices: [],
+    shopItems: [],
+    shopHealUsed: false,
     resets: 0,
     status: 'playing',
-    log: [{ side: 'system', text: `【${firstDef.rank}】${firstDef.name}（HP ${firstDef.hp}）が現れた！` }],
+    log: [
+      {
+        side: 'system',
+        text: `職業「${jobDef.icon}${jobDef.name}」で出陣！【${firstDef.rank}】${firstDef.name}（HP ${firstDef.hp}）が現れた！`,
+      },
+    ],
     events: [],
   };
 
@@ -1068,27 +1178,37 @@ export function step(prev: BattleState, action: Action): StepResult {
   if (action.type === 'choose_level_bonus') {
     if (s.pendingLevelUps <= 0) return fail('選択可能なレベルアップボーナスがありません');
     const b = action.bonus;
-    if (b.type === 'hp_20') {
-      s.player.maxHp += 20;
-      s.player.hp += 20;
-      s.events.push({ type: 'heal', target: 'player', amount: 20 });
-      s.log.push({ side: 'system', text: '【レベルアップボーナス】最大HP+20 を獲得した！' });
+    if (b.type === 'hp_100' || b.type === 'hp_20') {
+      s.player.maxHp += 100;
+      s.player.hp += 100;
+      s.events.push({ type: 'heal', target: 'player', amount: 100 });
     } else if (b.type === 'tile_atk_2') {
       s.bonusTileAtk[b.group] = (s.bonusTileAtk[b.group] ?? 0) + 2;
-      s.log.push({
-        side: 'system',
-        text: `【レベルアップボーナス】${TILE_GROUP_LABEL[b.group]}の攻撃力+2 を獲得した！`,
-      });
     } else if (b.type === 'banish_kind') {
       if (isKindBanished(s, b.kind)) return fail('その牌はすでに残り牌0になっています');
       s.banishedKinds.push(b.kind);
       enforceWallRestrictions(s);
-      s.log.push({
-        side: 'system',
-        text: `【レベルアップボーナス】「${kindName(b.kind)}」の残り牌を永続的に0にした！`,
-      });
     }
     s.pendingLevelUps--;
+
+    // レベルアップボーナスをすべて選び終えた後、保留されていた敵ターンがあれば実行する
+    if (s.pendingLevelUps === 0 && s.pendingMonsterTurn) {
+      s.pendingMonsterTurn = false;
+      const afterPlayerState = structuredClone(s);
+      const playerEvents = [...s.events];
+      s.events = [];
+      const monsterTurnSteps: MonsterTurnStep[] = [];
+      endPlayerTurnAndAdvance(s, rng, monsterTurnSteps);
+      s.rng = rng.state;
+      return {
+        state: s,
+        afterPlayerState,
+        playerEvents,
+        playerLogs: [],
+        monsterTurnSteps,
+      };
+    }
+
     s.rng = rng.state;
     return { state: s };
   }
@@ -1100,32 +1220,87 @@ export function step(prev: BattleState, action: Action): StepResult {
 
     grantEquipment(s, action.equipId, rng);
 
-    // 次のステージへ進行（手牌・カン・持続バフ・残り牌状況を持ち越す）
-    const nextStage = Math.min(MAX_STAGE, s.stage + 1);
-    const nextDef = MONSTERS[nextStage - 1];
-    s.stage = nextStage;
-    s.monster = { def: nextDef, hp: nextDef.hp, maxHp: nextDef.hp };
-    s.turn = 1;
-    s.chain = 0;
-    s.sealedEquipIndices = [];
-    s.extraChains = s.buffs.slowTurns > 0 ? 0 : countActiveEquip(s, 'always_chain_1');
-    s.nextChainMult = 1;
-    s.riichi = false;
-    s.riichiSwapsThisTurn = 0;
-    s.mulligansUsed = 0;
-    s.revivedThisBattle = 0;
-    s.healMode = false;
-    s.expMult = 1;
-    s.buffs.guardBarrier = 0;
-    s.enemyBuffs = { charged: false, defendTurns: 0, reflectTurns: 0 };
-    s.rewardChoices = [];
-    s.status = 'playing';
+    // 3試合終了ごと（第3戦・第6戦・第9戦クリア後）に商店へ入る
+    if (s.stage % 3 === 0 && s.stage < MAX_STAGE) {
+      openShop(s, rng);
+    } else {
+      advanceToNextStage(s, rng);
+    }
+    s.rng = rng.state;
+    return { state: s };
+  }
 
-    ensureStartDragonSet(s, rng);
+  // 商店での処理
+  if (action.type === 'buy_shop_item') {
+    if (s.status !== 'shop') return fail('現在は商店にいません');
+    if (!s.shopItems.includes(action.equipId)) return fail('その商品は在庫にありません');
+    if (s.equipments.includes(action.equipId)) return fail('すでに所持している装備です');
+    const eq = getEquipment(action.equipId);
+    const price = getEquipmentBuyPrice(eq.rarity);
+    if (s.money < price) return fail(`銭が足りません（必要: ${price.toLocaleString()}銭）`);
+
+    s.money -= price;
+    s.shopItems = s.shopItems.filter((id) => id !== action.equipId);
     s.log.push({
       side: 'system',
-      text: `【${nextDef.rank}】${nextDef.name}（HP ${nextDef.hp}）が現れた！`,
+      text: `🛒【商店】${price.toLocaleString()}銭を支払い、「${eq.name}」を購入した！（残り ${s.money.toLocaleString()}銭）`,
     });
+    grantEquipment(s, action.equipId, rng);
+    s.rng = rng.state;
+    return { state: s };
+  }
+
+  if (action.type === 'buy_shop_heal') {
+    if (s.status !== 'shop') return fail('現在は商店にいません');
+    if (s.shopHealUsed) return fail('HP回復はこの商店で1回のみ利用できます');
+    if (s.player.hp >= s.player.maxHp) return fail('HPはすでに満タンです');
+    const price = 1000;
+    if (s.money < price) return fail('銭が足りません（必要: 1,000銭）');
+
+    s.money -= price;
+    s.shopHealUsed = true;
+    const heal = Math.max(1, Math.round(s.player.maxHp * 0.3));
+    s.player.hp = Math.min(s.player.maxHp, s.player.hp + heal);
+    s.events.push({ type: 'heal', target: 'player', amount: heal });
+    s.log.push({
+      side: 'system',
+      text: `🍵【商店】1,000銭を支払い、HPを ${heal.toLocaleString()}（30%）回復した！（残り ${s.money.toLocaleString()}銭）`,
+    });
+    s.rng = rng.state;
+    return { state: s };
+  }
+
+  if (action.type === 'sell_equip') {
+    if (s.status !== 'shop') return fail('現在は商店にいません');
+    const idx = action.equipIndex;
+    if (idx < 0 || idx >= s.equipments.length) return fail('売却する装備の指定が不正です');
+
+    const [removedId] = s.equipments.splice(idx, 1);
+    s.sealedEquipIndices = s.sealedEquipIndices
+      .filter((i) => i !== idx)
+      .map((i) => (i > idx ? i - 1 : i));
+
+    if (removedId === 'hp_up_10') {
+      s.player.maxHp = Math.max(1, Math.round(s.player.maxHp / 1.1));
+      s.player.hp = Math.min(s.player.hp, s.player.maxHp);
+    } else if (removedId === 'hp_up_30') {
+      s.player.maxHp = Math.max(1, Math.round(s.player.maxHp / 1.3));
+      s.player.hp = Math.min(s.player.hp, s.player.maxHp);
+    } else if (removedId === 'hp_double') {
+      s.player.maxHp = Math.max(1, Math.round(s.player.maxHp / 2));
+      s.player.hp = Math.min(s.player.hp, s.player.maxHp);
+    }
+
+    const eq = getEquipment(removedId);
+    const sellPrice = getEquipmentSellPrice(eq.rarity);
+    gainMoney(s, sellPrice, `装備「${eq.name}」売却`);
+    s.rng = rng.state;
+    return { state: s };
+  }
+
+  if (action.type === 'leave_shop') {
+    if (s.status !== 'shop') return fail('現在は商店にいません');
+    advanceToNextStage(s, rng);
     s.rng = rng.state;
     return { state: s };
   }
@@ -1145,13 +1320,15 @@ export function step(prev: BattleState, action: Action): StepResult {
       if (!canDeclareRiichi(s.hand, s.melds)) {
         return fail('リーチは「あと1枚で3セットが揃う状態」のときのみ宣言できます');
       }
+      const maxSwaps = getRiichiMaxSwaps(s);
+      const masterNote = s.job === 'master' ? '被ダメ半減 ／ ' : '';
       const need = 3 - s.melds.length;
       if (s.hand.length >= need * 3) {
         const discards = findRiichiDiscards(s.hand, s.melds);
         if (action.discardTile === undefined || !discards.includes(action.discardTile)) {
           return fail('リーチ宣言で捨てる牌（聴牌になる牌）を1枚選んでください');
         }
-        // 選んだ捨て牌1枚を切ってリーチ宣言（1ターン最大3枚入れ替えの1枚目として処理）
+        // 選んだ捨て牌1枚を切ってリーチ宣言（1ターン最大maxSwaps枚入れ替えの1枚目として処理）
         s.riichi = true;
         s.riichiSwapsThisTurn = 1;
         const discardName = kindName(kindOf(action.discardTile));
@@ -1164,8 +1341,8 @@ export function step(prev: BattleState, action: Action): StepResult {
         s.log.push({
           side: 'player',
           text: completedNow
-            ? `${discardName} を切ってリーチ宣言！（1/3枚目） いきなり3セットが揃いました！`
-            : `${discardName} を切ってリーチ宣言！（被ダメージ半減 ／ 1/3枚目入れ替え） 1ターン最大3枚まで自動で自摸切りを進めます！`,
+            ? `${discardName} を切ってリーチ宣言！（1/${maxSwaps}枚目） いきなり3セットが揃いました！`
+            : `${discardName} を切ってリーチ宣言！（${masterNote}1/${maxSwaps}枚目入れ替え） 1ターン最大${maxSwaps}枚まで自動で自摸切りを進めます！`,
         });
         s.rng = rng.state;
         return { state: s };
@@ -1175,7 +1352,7 @@ export function step(prev: BattleState, action: Action): StepResult {
       s.riichiSwapsThisTurn = 0;
       s.log.push({
         side: 'player',
-        text: 'リーチ宣言！（被ダメージ半減） 1ターン最大3枚まで自動で自摸切りを進めます！',
+        text: `リーチ宣言！（${masterNote}1ターン最大${maxSwaps}枚まで自動で自摸切りを進めます！）`,
       });
       s.rng = rng.state;
       return { state: s };
@@ -1185,31 +1362,10 @@ export function step(prev: BattleState, action: Action): StepResult {
       if (!s.riichi) return fail('現在はリーチ中ではありません');
       s.riichi = false;
       s.riichiSwapsThisTurn = 0;
-      s.buffs.sealYakuTurns = Math.max(s.buffs.sealYakuTurns, 5);
+      s.buffs.sealYakuTurns += 5;
       s.log.push({
         side: 'player',
         text: 'リーチをキャンセルした！（ペナルティ：5ターンの間、役の効果が発動しなくなる）',
-      });
-      s.rng = rng.state;
-      return { state: s };
-    }
-
-    case 'mulligan': {
-      if (s.turn !== 1 || s.chain > 0) return fail('マリガンは1ターン目の最初の行動前のみ可能です');
-      if (s.mulligansUsed >= 2) return fail('マリガンは1バトルに2回までです');
-      if (!canMulliganHand(s.hand)) return fail('手牌に1・9・字牌が6枚以上含まれていません');
-
-      const count = s.hand.length;
-      s.wall.push(...s.hand);
-      s.hand = [];
-      s.sealedTiles = {};
-      s.drawn = [];
-      drawN(s, rng, count);
-      s.drawn = [s.hand[s.hand.length - 1]];
-      s.mulligansUsed++;
-      s.log.push({
-        side: 'player',
-        text: `マリガンを実行し、手牌${count}枚を引き直した（残り${2 - s.mulligansUsed}回）`,
       });
       s.rng = rng.state;
       return { state: s };
@@ -1467,7 +1623,8 @@ export function step(prev: BattleState, action: Action): StepResult {
         // 敵の「反射」判定
         if (s.enemyBuffs.reflectTurns > 0 && s.monster.hp > 0) {
           const rawReflect = Math.max(1, Math.floor(ev.damage / 2));
-          const reflectDmg = s.riichi ? Math.max(1, Math.round(rawReflect * 0.5)) : rawReflect;
+          const reflectDmg =
+            s.riichi && s.job === 'master' ? Math.max(1, Math.round(rawReflect * 0.5)) : rawReflect;
           s.player.hp = Math.max(0, s.player.hp - reflectDmg);
           s.events.push({ type: 'damage', target: 'player', amount: reflectDmg });
           s.log.push({
@@ -1481,11 +1638,11 @@ export function step(prev: BattleState, action: Action): StepResult {
         }
       }
 
-      // 「セットのみ（役なし）」の強化効果：同牌セット・並びセット
+      // 職業固有のセット効果（雀剣士・麻雀医・忍びの雀士）
       if (ev.basicDrawPairs > 0) {
         s.log.push({
           side: 'system',
-          text: `【同牌セット効果】基礎攻撃力+${ev.basicDrawPairs * 50}% ＆ 補充でペア（2枚組）を引き込む！`,
+          text: `【雀剣士効果】役なし同牌セットによりダメージ2倍 ＆ 補充でペア（2枚組）を引き込む！`,
         });
       }
       if (ev.basicShuntsuHealRate > 0) {
@@ -1494,16 +1651,22 @@ export function step(prev: BattleState, action: Action): StepResult {
         s.events.push({ type: 'heal', target: 'player', amount: shuntsuHeal });
         s.log.push({
           side: 'system',
-          text: `【並びセット効果】HPが ${shuntsuHeal.toLocaleString()} 回復し、補充で2枚並びを引き込む！`,
+          text: `【麻雀医効果】役なし並びセットによりHPが ${shuntsuHeal.toLocaleString()} 回復し、補充で2枚並びを引き込む！`,
+        });
+      }
+      if (ev.jobBonusChains > 0) {
+        s.log.push({
+          side: 'system',
+          text: `【忍びの雀士効果】字牌1セット攻撃によりダメージ2.5倍 ＆ チェーン+1！`,
         });
       }
 
-      // 金牌・赤牌・虹牌を攻撃使用した直後の銭獲得
+      // セット内に組み込まれた金牌・赤牌・虹牌の銭獲得
       const pureGoldCount = Math.max(0, ev.goldCount - ev.redCount);
       const specialTileMoney =
         pureGoldCount * 15 + ev.redCount * 25 + ev.usedRainbowCount * 50;
       if (specialTileMoney > 0) {
-        gainMoney(s, specialTileMoney, '金/赤/虹牌使用');
+        gainMoney(s, specialTileMoney, 'セット内の金/赤/虹牌使用');
       }
 
       // 役成立ボーナス経験値（1セット役・リーチ < 2セット役 < 3セット役 < 役満相当役）
@@ -1522,11 +1685,11 @@ export function step(prev: BattleState, action: Action): StepResult {
         gainMoney(s, 30 * ev.yaku.length * abacusCount, '招財の算盤');
       }
 
-      // 赤牌を攻撃に使用した場合（役に含めなくてよい）、同じ種類の牌の基礎攻撃力+5（永続）
+      // 赤牌をセット内に組み込んで攻撃に使用した場合、同じ種類の牌の基礎攻撃力+5（永続）
       if (ev.redCount > 0) {
         const activeEquipsNow = getActiveEquips(s);
-        const allAttackTiles: TileId[] = [...tiles, ...melds.flatMap((m) => m.tiles)];
-        for (const t of allAttackTiles) {
+        const setTiles: TileId[] = ev.decomp.sets.flatMap((m) => m.tiles);
+        for (const t of setTiles) {
           if (effectiveTileMod(t, s.tileMods, activeEquipsNow) === 'red') {
             const k = kindOf(t);
             const st = suitOf(k);
@@ -1541,7 +1704,7 @@ export function step(prev: BattleState, action: Action): StepResult {
         }
       }
 
-      // 役の効果適用
+      // 役の効果適用（継続バフが重複した場合は残り継続ターン数を加算）
       let nextMult = 1;
       let forceGoldDrawCount = 0;
       let drawThreePairs = false;
@@ -1584,31 +1747,31 @@ export function step(prev: BattleState, action: Action): StepResult {
             gainMoney(s, 50, 'チャンタ効果');
             break;
           case 'honiisou':
-            s.buffs.honiisouTurns = 5;
-            s.log.push({ side: 'system', text: '【混一色効果】5ターンの間、字牌は金牌として補充される！' });
+            s.buffs.honiisouTurns += 5;
+            s.log.push({ side: 'system', text: '【混一色効果】字牌が金牌として補充される効果+5ターン！' });
             break;
           case 'pinfu':
-            s.buffs.pinfuTurns = 5;
-            s.log.push({ side: 'system', text: '【平和効果】5ターンの間、毎ターンHPが自動回復する！' });
+            s.buffs.pinfuTurns += 5;
+            s.log.push({ side: 'system', text: '【平和効果】毎ターンHP自動回復の効果+5ターン！' });
             break;
           case 'sanankou':
-            s.buffs.sanankouTurns = 5;
-            s.log.push({ side: 'system', text: '【三暗刻効果】5ターンの間、ダメージが3倍になる！' });
+            s.buffs.sanankouTurns += 5;
+            s.log.push({ side: 'system', text: '【三暗刻効果】ダメージ3倍の効果+5ターン！' });
             break;
           case 'chinroutou':
-            s.buffs.chinroutouTurns = 5;
+            s.buffs.chinroutouTurns += 5;
             s.log.push({
               side: 'system',
-              text: '【清老頭効果】5ターンの間、補充がすべて2〜8の数牌になり30%で金牌化！',
+              text: '【清老頭効果】補充がすべて2〜8の数牌になり30%で金牌化する効果+5ターン！',
             });
             gainMoney(s, 150, '清老頭効果');
             break;
           case 'chiniisou':
-            s.buffs.chiniisouTurns = 5;
+            s.buffs.chiniisouTurns += 5;
             s.buffs.chiniisouSuit = y.suit ?? 'p';
             s.log.push({
               side: 'system',
-              text: `【清一色効果】5ターンの間、残り牌外から${suitName(s.buffs.chiniisouSuit)}が補充される！`,
+              text: `【清一色効果】残り牌外から${suitName(s.buffs.chiniisouSuit)}が補充される効果+5ターン！`,
             });
             break;
           case 'daisangen': {
@@ -1685,7 +1848,7 @@ export function step(prev: BattleState, action: Action): StepResult {
         needDraw -= 3;
       }
 
-      // セットのみ（役なし）の同牌セット効果：補充でペアを引き込む
+      // 雀剣士の同牌セット効果：補充でペアを引き込む
       if (ev.basicDrawPairs > 0 && needDraw >= 2) {
         const pairsToDraw = Math.min(ev.basicDrawPairs, Math.floor(needDraw / 2));
         const availKinds = ACTIVE_KINDS.filter((k) => !isKindBanished(s, k));
@@ -1697,7 +1860,7 @@ export function step(prev: BattleState, action: Action): StepResult {
         }
       }
 
-      // セットのみ（役なし）の並びセット効果：補充で2枚並びを引き込む
+      // 麻雀医の並びセット効果：補充で2枚並びを引き込む
       if (ev.basicDrawSeq2 > 0 && needDraw >= 2) {
         const seqsToDraw = Math.min(ev.basicDrawSeq2, Math.floor(needDraw / 2));
         const seqStartKinds = ACTIVE_KINDS.filter(
@@ -1729,7 +1892,8 @@ export function step(prev: BattleState, action: Action): StepResult {
       // 猛毒デバフ中の攻撃後ダメージ（HP-10%）
       if (s.buffs.venomTurns > 0) {
         const rawPoison = Math.max(1, Math.round(s.player.maxHp * 0.1));
-        const poisonDmg = s.riichi ? Math.max(1, Math.round(rawPoison * 0.5)) : rawPoison;
+        const poisonDmg =
+          s.riichi && s.job === 'master' ? Math.max(1, Math.round(rawPoison * 0.5)) : rawPoison;
         s.player.hp = Math.max(0, s.player.hp - poisonDmg);
         s.events.push({ type: 'damage', target: 'player', amount: poisonDmg });
         s.log.push({ side: 'system', text: `猛毒のダメージ！ HPが ${poisonDmg} 減少した！` });
@@ -1746,21 +1910,22 @@ export function step(prev: BattleState, action: Action): StepResult {
         return { state: s, attack: ev };
       }
 
-      // リーチ中の1ターン最大3枚入れ替え処理
+      // リーチ中の1ターン最大maxSwaps枚入れ替え処理
       if (isRiichiTsumogiri) {
+        const maxSwaps = getRiichiMaxSwaps(s);
         s.riichiSwapsThisTurn = (s.riichiSwapsThisTurn ?? 0) + 1;
         if (hasThreeSets(s.hand, s.melds)) {
           s.log.push({
             side: 'system',
-            text: `🎉 リーチツモ！（${s.riichiSwapsThisTurn}/3枚目） 3セットが揃いました！そのまま攻撃できます！`,
+            text: `🎉 リーチツモ！（${s.riichiSwapsThisTurn}/${maxSwaps}枚目） 3セットが揃いました！そのまま攻撃できます！`,
           });
           s.rng = rng.state;
           return { state: s, attack: ev };
         }
-        if (s.riichiSwapsThisTurn < 3) {
+        if (s.riichiSwapsThisTurn < maxSwaps) {
           s.log.push({
             side: 'system',
-            text: `🔄 リーチ自摸切り（${s.riichiSwapsThisTurn}/3枚目）：このターンあと${3 - s.riichiSwapsThisTurn}枚入れ替えます…`,
+            text: `🔄 リーチ自摸切り（${s.riichiSwapsThisTurn}/${maxSwaps}枚目）：このターンあと${maxSwaps - s.riichiSwapsThisTurn}枚入れ替えます…`,
           });
           s.rng = rng.state;
           return { state: s, attack: ev };
@@ -1772,6 +1937,11 @@ export function step(prev: BattleState, action: Action): StepResult {
       if (s.buffs.slowTurns > 0) {
         s.extraChains = 0;
         s.chain = 0;
+        if (s.pendingLevelUps > 0) {
+          s.pendingMonsterTurn = true;
+          s.rng = rng.state;
+          return { state: s, attack: ev };
+        }
         const afterPlayerState = structuredClone(s);
         const playerEvents = [...s.events];
         const playerLogs = s.log.slice(prevLogLen);
@@ -1800,6 +1970,11 @@ export function step(prev: BattleState, action: Action): StepResult {
           s.rng = rng.state;
           return { state: s, attack: ev };
         } else {
+          if (s.pendingLevelUps > 0) {
+            s.pendingMonsterTurn = true;
+            s.rng = rng.state;
+            return { state: s, attack: ev };
+          }
           const afterPlayerState = structuredClone(s);
           const playerEvents = [...s.events];
           const playerLogs = s.log.slice(prevLogLen);

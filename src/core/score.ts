@@ -1,4 +1,4 @@
-import { Decomposition, Mentsu, decomposeSelection } from './mentsu';
+import { Decomposition, Mentsu, decomposeSelection, isSet } from './mentsu';
 import {
   Kind,
   TileGroup,
@@ -61,23 +61,27 @@ export interface AttackEval {
   tilePower: number;
   /** セット・ペア・カンのボーナス合計 */
   setBonus: number;
-  /** カンおよび「セットのみ（役なし）同牌セット」補正後の基本攻撃力 */
+  /** カン補正後の基本攻撃力 */
   baseAttack: number;
   /** セット数による最終ダメージ倍率（0セット=1、1セット=1.5、2セット=2、3セット=3） */
   setCountMult: number;
-  /** セットのみ（役なし）の並びセットによるHP回復率（1組につき0.1＝10%） */
+  /** 職業効果によるダメージ倍率（雀剣士2倍、忍びの雀士2.5倍など） */
+  jobDmgMult: number;
+  /** 職業効果による追加チェーン数（忍びの雀士+1） */
+  jobBonusChains: number;
+  /** 麻雀医の役なし並びセットによるHP回復率（1組につき0.1＝10%） */
   basicShuntsuHealRate: number;
-  /** セットのみ（役なし）の同牌セットによるペア補充組数 */
+  /** 雀剣士の役なし同牌セットによるペア補充組数 */
   basicDrawPairs: number;
-  /** セットのみ（役なし）の並びセットによる2枚並び補充組数 */
+  /** 麻雀医の役なし並びセットによる2枚並び補充組数 */
   basicDrawSeq2: number;
-  /** 金牌（＋赤牌）枚数 */
+  /** セットに含まれた金牌（＋赤牌）枚数 */
   goldCount: number;
-  /** 赤牌枚数（攻撃に使用すると同種牌の基礎攻撃力+5［永続］） */
+  /** セットに含まれた赤牌枚数（同種牌の基礎攻撃力+5［永続］） */
   redCount: number;
   /** セットに含まれた虹牌枚数 */
   rainbowCount: number;
-  /** 攻撃に使用した全牌中の虹牌枚数（銭獲得用） */
+  /** セットに含まれた虹牌枚数（銭獲得用） */
   usedRainbowCount: number;
   /** 今回の攻撃で獲得する追加チェーン回数 */
   gainedChains: number;
@@ -157,6 +161,7 @@ export function evaluateDecomposition(
     unlockedWinds,
     tanyaoUnlocked,
     isRiichiComplete,
+    job: ctx.job,
   });
   const yakuSealed = (ctx.sealYakuTurns ?? 0) > 0;
   const yaku = yakuSealed ? [] : rawYaku;
@@ -179,44 +184,46 @@ export function evaluateDecomposition(
   const rawAttack = Math.max(1, tilePower + setBonus + flatAtk - debuffAtk);
 
   const kanCount = d.sets.filter((m) => m.type === 'kantsu').length;
-  const koutsuCount = d.sets.filter((m) => m.type === 'koutsu').length;
+  const koutsuCount = d.sets.filter(isSet).length;
   const shuntsuCount = d.sets.filter((m) => m.type === 'shuntsu').length;
 
-  // 「セットのみ（役なし）」の攻撃強化：
-  // - 同牌セット: 基礎攻撃力合計（諸々計算前）を1組につき+50%増加、補充でペアを引き込む
-  // - 並びセット: HP回復10%（1組につき10%）、補充で2枚並びを引き込む
+  // 役なし時のセット効果は廃止し、特定の職業でのみ効果がつく：
+  // - 雀剣士(sword): 同牌セットを含む役なし攻撃が、ダメージ2倍＋補充にペアを引き込む
+  // - 麻雀医(doctor): 並びセットを含む役なし攻撃が、回復10%＋補充に2個並びを引き込む
+  // - 忍びの雀士(ninja): 字牌による同牌セットを含む1セット攻撃が、ダメージ2.5倍＋チェーン追加1
   const isSetsOnlyNoYaku = yaku.length === 0 && d.sets.length > 0;
-  const basicKoutsuBonusRate = isSetsOnlyNoYaku ? 0.5 * koutsuCount : 0;
-  const basicShuntsuHealRate = isSetsOnlyNoYaku ? 0.1 * shuntsuCount : 0;
-  const basicDrawPairs = isSetsOnlyNoYaku ? koutsuCount : 0;
-  const basicDrawSeq2 = isSetsOnlyNoYaku ? shuntsuCount : 0;
+  const isSwordKoutsuNoYaku = ctx.job === 'sword' && isSetsOnlyNoYaku && koutsuCount > 0;
+  const isDoctorShuntsuNoYaku = ctx.job === 'doctor' && isSetsOnlyNoYaku && shuntsuCount > 0;
+  const isNinjaHonorSingleSet =
+    ctx.job === 'ninja' && d.sets.length === 1 && isSet(d.sets[0]) && isHonor(d.sets[0].kind);
 
-  const baseAttack = rawAttack * (1 + 0.5 * kanCount + basicKoutsuBonusRate);
+  const basicShuntsuHealRate = isDoctorShuntsuNoYaku ? 0.1 * shuntsuCount : 0;
+  const basicDrawPairs = isSwordKoutsuNoYaku ? koutsuCount : 0;
+  const basicDrawSeq2 = isDoctorShuntsuNoYaku ? shuntsuCount : 0;
+
+  let jobDmgMult = 1;
+  if (isSwordKoutsuNoYaku) jobDmgMult *= 2;
+  if (isNinjaHonorSingleSet) jobDmgMult *= 2.5;
+  const jobBonusChains = isNinjaHonorSingleSet ? 1 : 0;
+
+  const baseAttack = rawAttack * (1 + 0.5 * kanCount);
 
   // セット数ボーナス（役とも複合）：1セット=1.5倍、2セット=2倍、3セット=3倍
   const setCount = d.sets.length;
   const setCountMult = setCount >= 3 ? 3 : setCount === 2 ? 2 : setCount === 1 ? 1.5 : 1;
 
-  // 金牌・赤牌・虹牌の集計
+  // 金・赤・虹の色牌効果は、セット（d.sets）内に組み込まないと発動しない（銭獲得も同様）
+  const setTileIds = new Set<TileId>(d.sets.flatMap((m) => m.tiles));
   let goldCount = 0;
   let redCount = 0;
-  let usedRainbowCount = 0;
-  for (const t of allTiles) {
+  let rainbowCount = 0;
+  for (const t of setTileIds) {
     const mod = effectiveTileMod(t, ctx.tileMods, equips);
     if (mod === 'gold' || mod === 'red') goldCount++;
     if (mod === 'red') redCount++;
-    if (mod === 'rainbow') usedRainbowCount++;
+    if (mod === 'rainbow') rainbowCount++;
   }
-
-  // セットまたは四対子に含まれる虹牌の数
-  const setTileIds = new Set<TileId>([
-    ...d.sets.flatMap((m) => m.tiles),
-    ...(d.isFourPairs ? d.pairs.flatMap((p) => p.tiles) : []),
-  ]);
-  let rainbowCount = 0;
-  for (const t of setTileIds) {
-    if (effectiveTileMod(t, ctx.tileMods, equips) === 'rainbow') rainbowCount++;
-  }
+  const usedRainbowCount = rainbowCount;
 
   // ダメージ倍率計算
   const level = ctx.level ?? 0;
@@ -238,6 +245,7 @@ export function evaluateDecomposition(
       baseAttack *
         levelMult *
         setCountMult *
+        jobDmgMult *
         yakuMult *
         sanankouMult *
         riichiMult *
@@ -251,16 +259,19 @@ export function evaluateDecomposition(
   // 獲得チェーン数の計算
   let gainedChains = 0;
   if (d.isFourPairs && !yakuSealed) {
-    gainedChains += 4;
+    const nekoChains = yaku.filter((y) => y.id === 'neko_punch').reduce((a, y) => a + y.chains, 0);
+    gainedChains += 4 + nekoChains;
   } else if (yaku.length > 0) {
-    // 通常役（リーチ含む）は1回、風牌セットは1組につき2回
+    // 通常役（リーチ・つよつよこうげき含む）は1回、風牌セットは1組につき2回、ねこぱんちはペア数分
     const windChains = yaku.filter((y) => y.id.startsWith('wind_')).reduce((a, y) => a + y.chains, 0);
-    const hasNormalYaku = yaku.some((y) => !y.id.startsWith('wind_'));
-    gainedChains += windChains + (hasNormalYaku ? 1 : 0);
+    const nekoChains = yaku.filter((y) => y.id === 'neko_punch').reduce((a, y) => a + y.chains, 0);
+    const hasNormalYaku = yaku.some((y) => !y.id.startsWith('wind_') && y.id !== 'neko_punch');
+    gainedChains += windChains + nekoChains + (hasNormalYaku ? 1 : 0);
   }
   if (isRiichiComplete && gainedChains === 0 && !yakuSealed) {
     gainedChains += 1;
   }
+  gainedChains += jobBonusChains;
   if (rainbowCount > 0) {
     gainedChains += 2 * rainbowCount;
   }
@@ -279,6 +290,8 @@ export function evaluateDecomposition(
     setBonus,
     baseAttack,
     setCountMult,
+    jobDmgMult,
+    jobBonusChains,
     basicShuntsuHealRate,
     basicDrawPairs,
     basicDrawSeq2,

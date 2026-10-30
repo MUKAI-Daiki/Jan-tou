@@ -4,13 +4,13 @@ import {
   calculateScore,
   countActiveEquip,
   getActiveEquips,
+  getRiichiMaxSwaps,
   hasAnyPlayerDebuff,
   isKindBanished,
   wallCounts,
 } from '../core/battle';
 import {
   canDeclareRiichi,
-  canMulliganHand,
   findRiichiDiscards,
   getRiichiWaits,
   hasThreeSets,
@@ -32,16 +32,29 @@ import {
   tileFace,
 } from '../core/tile';
 import { YAKU_CATALOG } from '../core/yaku';
-import { RARITY_LABEL, getEquipment } from '../data/equipments';
+import {
+  JOBS,
+  JobId,
+  RARITY_LABEL,
+  getEquipment,
+  getEquipmentBuyPrice,
+  getEquipmentSellPrice,
+  getJobDef,
+} from '../data/equipments';
 import { MAX_STAGE, MONSTERS, expForNextLevel } from '../data/monsters';
 
 export interface UiState {
+  selectedJob: JobId;
   selected: Set<TileId>;
   selectedMelds: Set<number>;
   /** 複製・サーチ用に選択された手牌ID（順序保持用） */
   selectionOrder: TileId[];
+  /** 複製待機モードかどうか */
+  copyMode?: boolean;
   /** サーチ待機モードかどうか */
   searchMode: boolean;
+  /** サーチで残り牌から先に選択した牌種 */
+  searchPickedKind?: Kind | null;
   /** リーチ宣言時の捨て牌選択モードかどうか */
   riichiSelectMode: boolean;
   /** 過去ログを開いているかどうか */
@@ -85,7 +98,6 @@ export interface Preview {
   canKan: boolean;
   canRiichi: boolean;
   canConfirmRiichi: boolean;
-  canMulligan: boolean;
   ev?: AttackEval;
 }
 
@@ -201,7 +213,18 @@ function renderYakuModal(state?: BattleState): string {
   </div>`;
 }
 
-export function renderTitle(showYakuModal = false): string {
+export function renderTitle(showYakuModal = false, selectedJob: JobId = 'sword'): string {
+  const jobCards = JOBS.map((j) => {
+    const active = j.id === selectedJob ? ' active' : '';
+    return `<button class="job-card${active}" data-job="${j.id}">
+      <div class="job-head">
+        <span class="job-icon">${j.icon}</span>
+        <span class="job-name">${esc(j.name)}</span>
+      </div>
+      <div class="job-desc">${esc(j.detailDesc)}</div>
+    </button>`;
+  }).join('');
+
   const cards = MONSTERS.map(
     (m) => `<button class="monster-card" data-monster="${m.id}">
       <div class="rank">${esc(m.rank)}</div>
@@ -209,24 +232,27 @@ export function renderTitle(showYakuModal = false): string {
       <div class="mhp">HP ${m.hp.toLocaleString()} / 攻撃 ${m.atk}</div>
     </button>`,
   ).join('');
+  const curJob = getJobDef(selectedJob);
   return `<main class="title">
     <h1>雀闘<span class="kari">：改</span></h1>
     <p class="sub">牌を束ね、役とチェーンで${MAX_STAGE}連戦を勝ち抜け。</p>
+    <h2>1. 職業を選択（現在：${curJob.icon}${esc(curJob.name)}）</h2>
+    <div class="job-grid">${jobCards}</div>
     <div class="start-hero">
-      <button class="btn-start-main" data-monster="${MONSTERS[0].id}">${MAX_STAGE}連戦を開始</button>
+      <button class="btn-start-main" data-monster="${MONSTERS[0].id}">${curJob.icon}${esc(curJob.name)}で${MAX_STAGE}連戦を開始</button>
       <button class="btn-yaku" data-action="open-yaku">役・効果一覧</button>
     </div>
     <section class="rules">
       <ul>
         <li><b>基本ルール</b>：全34種136枚・手牌9枚。任意の枚数を選んで<b>攻撃</b>し、同数を補充する。</li>
-        <li><b>攻撃力とセット強化</b>：1・9・字牌は<b>10</b>、2〜8はその数字。セット数に応じ最終威力<b>1.5倍／2倍／3倍</b>。役なしの<b>同牌セット</b>は基礎+50%＆ペア補充、<b>並びセット</b>はHP10%回復＆2枚並び補充。</li>
-        <li><b>役とチェーン</b>：役成立で固有効果＆<b>チェーン（連続攻撃）</b>発生。役満以外の役はすべて複合、タンヤオも常時発動可。</li>
-        <li><b>特殊牌と銭</b>：<b>金牌</b>（威力+50%）・<b>赤牌</b>（金効果＋同種攻撃+5永続）・<b>虹牌</b>（威力2倍＆チェーン+2）の使用や敵撃破・役満で<b>銭</b>を獲得。</li>
-        <li><b>カン・リーチ</b>：同種4枚で<b>カン</b>（金牌1枚補充、2セット役以上で使用可）。あと1枚で3セット揃う時は<b>リーチ</b>可（被ダメ半減・毎ターン最大3枚入替・完成で<b>リーチ役</b>成立）。</li>
+        <li><b>攻撃力とセット強化</b>：1・9・字牌は<b>10</b>、2〜8はその数字。セット数に応じ最終威力<b>1.5倍／2倍／3倍</b>。選んだ<b>職業</b>によって固有のセット効果や独自役が発動する。</li>
+        <li><b>役とチェーン</b>：役成立で固有効果＆<b>チェーン（連続攻撃）</b>発生。役満以外の役はすべて複合、タンヤオも常時発動可。継続バフ・デバフ重複時は残りターン数が加算される。</li>
+        <li><b>特殊牌と商店</b>：<b>金牌</b>（威力+50%）・<b>赤牌</b>（金効果＋同種攻撃+5永続）・<b>虹牌</b>（威力2倍＆チェーン+2）は<b>セット内に組み込むと発動</b>し<b>銭</b>も獲得。3試合ごとに<b>商店</b>で装備購入・売却・HP回復が可能。</li>
+        <li><b>カン・リーチ</b>：同種4枚で<b>カン</b>（金牌1枚補充、2セット役以上で使用可）。あと1枚で3セット揃う時は<b>リーチ</b>可（毎ターン最大3枚入替［雀老師は4枚＆被ダメ半減］・完成で<b>リーチ役</b>成立）。</li>
         <li><b>成長とスコア</b>：経験値でLvUP、勝利ごとに<b>ユニーク装備</b>を獲得。終了時に到達戦・Lv・成立役・装備から<b>最終スコア</b>を算出。</li>
       </ul>
     </section>
-    <h2>ステージを選択して開始</h2>
+    <h2>2. ステージを選択して開始</h2>
     <div class="monsters">${cards}</div>
     ${showYakuModal ? renderYakuModal() : ''}
   </main>`;
@@ -235,7 +261,13 @@ export function renderTitle(showYakuModal = false): string {
 function renderBuffBadges(s: BattleState): string {
   const badges: string[] = [];
   const b = s.buffs;
-  if (s.riichi) badges.push('<span class="badge buff">リーチ(被ダメ半減)</span>');
+  if (s.riichi) {
+    badges.push(
+      s.job === 'master'
+        ? '<span class="badge buff">リーチ(被ダメ半減)</span>'
+        : '<span class="badge buff">リーチ中</span>',
+    );
+  }
   if (s.healMode) badges.push('<span class="badge buff">回復変換ON</span>');
   if (b.nullifyDamage) badges.push('<span class="badge buff">白障壁</span>');
   if (b.guardBarrier > 0) badges.push(`<span class="badge buff">ガード-${b.guardBarrier}</span>`);
@@ -267,7 +299,7 @@ function renderBuffBadges(s: BattleState): string {
 function renderEnemyBuffBadges(s: BattleState): string {
   const eb = s.enemyBuffs;
   const badges: string[] = [];
-  if (eb.charged) badges.push('<span class="badge debuff">ためる(次3倍)</span>');
+  if (eb.charged) badges.push('<span class="badge debuff">ためる(次通常3倍)</span>');
   if (eb.defendTurns > 0) badges.push(`<span class="badge debuff">防御(${eb.defendTurns}T)</span>`);
   if (eb.reflectTurns > 0) badges.push(`<span class="badge debuff">反射(${eb.reflectTurns}T)</span>`);
   return badges.join('');
@@ -350,8 +382,8 @@ function renderLevelUpModal(s: BattleState, ui: UiState): string {
       <div class="equip-choices">
         <button class="equip-card rarity-uncommon" data-action="level-bonus-hp">
           <div class="eq-rarity">耐久強化</div>
-          <div class="eq-name">最大HP＋20</div>
-          <div class="eq-desc">最大HPと現在HPを+20（${s.player.maxHp} → ${s.player.maxHp + 20}）</div>
+          <div class="eq-name">最大HP＋100</div>
+          <div class="eq-desc">最大HPと現在HPを+100（${s.player.maxHp} → ${s.player.maxHp + 100}）</div>
         </button>
         <button class="equip-card rarity-rare" data-action="level-bonus-group-menu">
           <div class="eq-rarity">火力強化</div>
@@ -404,11 +436,104 @@ function renderRewardModal(s: BattleState, ui: UiState): string {
       </button>`;
     })
     .join('');
+  const nextNote =
+    s.stage % 3 === 0 && s.stage < MAX_STAGE
+      ? '装備を1つ選ぶと「商店」へ入ります。'
+      : `装備を1つ選んで第${s.stage + 1}戦へ進みます。`;
   return `<div class="overlay">
     <div class="reward-modal">
       <h2>ステージ ${s.stage} クリア！ 報酬選択</h2>
-      <p class="reward-sub">装備を1つ選んで第${s.stage + 1}戦へ進みます。</p>
+      <p class="reward-sub">${nextNote}</p>
       <div class="equip-choices">${cards}</div>
+    </div>
+  </div>`;
+}
+
+function renderShopModal(s: BattleState, ui: UiState): string {
+  if (
+    s.status !== 'shop' ||
+    s.pendingLevelUps > 0 ||
+    ui.isEnemyTurnAnimating ||
+    ui.isEnemyDefeatAnimating ||
+    ui.isLevelUpAnimating
+  ) {
+    return '';
+  }
+  const buyCards =
+    s.shopItems.length === 0
+      ? '<p class="muted-note">購入可能な商品はすべて売り切れました。</p>'
+      : s.shopItems
+          .map((id) => {
+            const eq = getEquipment(id);
+            const price = getEquipmentBuyPrice(eq.rarity);
+            const canBuy = s.money >= price;
+            return `<button class="equip-card rarity-${eq.rarity}${canBuy ? '' : ' shop-disabled'}" data-shop-buy="${esc(
+              eq.id,
+            )}" ${canBuy ? '' : 'disabled'}>
+              <div class="eq-rarity">${esc(RARITY_LABEL[eq.rarity])} ｜ 💰 ${price.toLocaleString()} 銭</div>
+              <div class="eq-name">${esc(eq.name)}</div>
+              <div class="eq-desc">${esc(eq.desc)}</div>
+            </button>`;
+          })
+          .join('');
+
+  const healAmount = Math.max(1, Math.round(s.player.maxHp * 0.3));
+  const canHeal = !s.shopHealUsed && s.money >= 1000 && s.player.hp < s.player.maxHp;
+  const healLabel = s.shopHealUsed
+    ? '🍵 HP 30%回復（購入済み）'
+    : s.player.hp >= s.player.maxHp
+      ? '🍵 HP 30%回復（HP満タン）'
+      : `🍵 HP 30%回復（+${healAmount} HP ／ 1,000 銭）`;
+
+  const sellList =
+    s.equipments.length === 0
+      ? '<span class="muted-note">売却できる所持装備がありません</span>'
+      : s.equipments
+          .map((id, idx) => {
+            const eq = getEquipment(id);
+            const sellPrice = getEquipmentSellPrice(eq.rarity);
+            return `<button class="shop-sell-pill rarity-${eq.rarity}" data-shop-sell="${idx}" title="${esc(
+              eq.desc,
+            )}">
+              <span>${esc(eq.name)}</span>
+              <span class="sell-price">売却 +${sellPrice.toLocaleString()}銭</span>
+            </button>`;
+          })
+          .join('');
+
+  return `<div class="overlay">
+    <div class="reward-modal shop-modal">
+      <div class="shop-header">
+        <div>
+          <h2>🏮 雀闘商店（第${s.stage}戦突破）</h2>
+          <p class="reward-sub">銭を使って装備の購入・売却やHP回復ができます。</p>
+        </div>
+        <div class="shop-status">
+          <span class="money-badge">💰 ${s.money.toLocaleString()} 銭</span>
+          <span class="shop-hp-badge">❤️ HP ${s.player.hp.toLocaleString()} / ${s.player.maxHp.toLocaleString()}</span>
+        </div>
+      </div>
+
+      ${ui.message ? `<div class="shop-msg">⚠️ ${esc(ui.message)}</div>` : ''}
+
+      <div class="shop-section">
+        <div class="shop-sec-title">🛒 商品ラインナップ（クリックで購入）</div>
+        <div class="equip-choices shop-grid">${buyCards}</div>
+      </div>
+
+      <div class="shop-section shop-service-row">
+        <div class="shop-sec-title">🍵 養生サービス（1回のみ）</div>
+        <button class="btn-shop-heal" data-action="shop-heal" ${canHeal ? '' : 'disabled'}>${healLabel}</button>
+      </div>
+
+      <div class="shop-section">
+        <div class="shop-sec-title">💰 所持装備の売却（クリックで買値の半額で売却）</div>
+        <div class="shop-sell-list">${sellList}</div>
+      </div>
+
+      <div class="shop-footer">
+        <button class="btn-start-main" data-action="leave-shop">第${s.stage + 1}戦へ進む</button>
+      </div>
     </div>
   </div>`;
 }
@@ -417,7 +542,6 @@ function renderWallModal(s: BattleState, ui: UiState): string {
   const counts = wallCounts(s);
   const canSearchClick =
     ui.searchMode &&
-    ui.selected.size === 1 &&
     countActiveEquip(s, 'skill_search') > 0 &&
     s.cooldowns.search === 0;
   const wall = ACTIVE_KINDS.map((k) => {
@@ -439,7 +563,11 @@ function renderWallModal(s: BattleState, ui: UiState): string {
       </div>
       ${
         canSearchClick
-          ? '<div class="search-modal-banner">入れ替えたい牌をクリック</div>'
+          ? `<div class="search-modal-banner">${
+              ui.selected.size === 1
+                ? '入れ替えたい残り牌をクリック'
+                : 'サーチ対象（手に入れたい残り牌）をクリック'
+            }</div>`
           : ''
       }
       <div class="wall-grid">${wall}</div>
@@ -526,7 +654,9 @@ export function renderBattle(v: BattleView): string {
         isNew && ui.drawAnimActive ? 'draw-in' : '',
         isSeparatedTsumo ? 'tsumo-gap' : '',
         riichiCls,
-        orderIdx === 0 && ui.selectionOrder.length === 2 ? 'copy-target' : '',
+        (ui.copyMode && orderIdx === 0) || (orderIdx === 0 && ui.selectionOrder.length === 2)
+          ? 'copy-target'
+          : '',
       ]
         .filter(Boolean)
         .join(' ');
@@ -552,8 +682,8 @@ export function renderBattle(v: BattleView): string {
   const canUseSkillsNow = !isModalBlockedByAnim && !s.riichi && !ui.riichiSelectMode && s.status === 'playing';
   const canToggleHealNow = canUseSkillsNow && hasHealSkill;
   const canResetWallNow = canUseSkillsNow && hasResetWallSkill && s.cooldowns.resetWall === 0;
-  const canCopyNow = canUseSkillsNow && hasCopySkill && s.cooldowns.copy === 0 && ui.selectionOrder.length === 2;
-  const canSearchNow = canUseSkillsNow && hasSearchSkill && s.cooldowns.search === 0 && ui.selected.size === 1;
+  const canCopyNow = canUseSkillsNow && hasCopySkill && s.cooldowns.copy === 0;
+  const canSearchNow = canUseSkillsNow && hasSearchSkill && s.cooldowns.search === 0;
   const hasAnyUsableSkill = canToggleHealNow || canResetWallNow || canCopyNow || canSearchNow;
 
   const playableHandCount = s.hand.filter((t) => !(s.sealedTiles[t] > 0)).length;
@@ -561,12 +691,16 @@ export function renderBattle(v: BattleView): string {
     !isModalBlockedByAnim &&
     !s.riichi &&
     !ui.riichiSelectMode &&
+    !ui.copyMode &&
+    !ui.searchMode &&
     playableHandCount > 0 &&
     (ui.selected.size < playableHandCount || ui.selectedMelds.size < s.melds.length);
   const canClearSelection =
     !isModalBlockedByAnim &&
     !s.riichi &&
     !ui.riichiSelectMode &&
+    !ui.copyMode &&
+    !ui.searchMode &&
     (ui.selected.size > 0 || ui.selectedMelds.size > 0);
 
   // 所持装備一覧
@@ -681,9 +815,9 @@ export function renderBattle(v: BattleView): string {
         ${
           riichiAutoRunning
             ? `<span class="riichi-auto-indicator">リーチ入替(${Math.min(
-                3,
+                getRiichiMaxSwaps(s),
                 s.riichiSwapsThisTurn + 1,
-              )}/3)</span>`
+              )}/${getRiichiMaxSwaps(s)})</span>`
             : ''
         }
         <div class="buff-row">${renderBuffBadges(s)}</div>
@@ -707,50 +841,47 @@ export function renderBattle(v: BattleView): string {
                     : ''
                 }
                 <button class="btn-clear" data-action="cancel-riichi-select">戻る</button>`
-              : `${
-                  preview.canAttack
-                    ? `<button class="btn-attack" data-action="attack">${
-                        s.healMode ? '回復攻撃' : '攻撃'
-                      }</button>`
-                    : ''
-                }
-                ${
-                  preview.canGuard
-                    ? '<button class="btn-guard" data-action="guard">ガード</button>'
-                    : ''
-                }
-                ${
-                  preview.canCure
-                    ? '<button class="btn-cure" data-action="cure-debuff">治療</button>'
-                    : ''
-                }
-                ${
-                  preview.canKan
-                    ? '<button class="btn-kan" data-action="kan">カン</button>'
-                    : ''
-                }
-                ${
-                  s.riichi
-                    ? '<button class="btn-cancel-riichi" data-action="cancel-riichi">リーチ解除</button>'
-                    : preview.canRiichi
-                      ? '<button class="btn-riichi" data-action="start-riichi-select">リーチ</button>'
+              : ui.copyMode || ui.searchMode
+                ? '<button class="btn-clear" data-action="cancel-skill-mode">戻る</button>'
+                : `${
+                    preview.canAttack
+                      ? `<button class="btn-attack" data-action="attack">${
+                          s.healMode ? '回復攻撃' : '攻撃'
+                        }</button>`
                       : ''
-                }
-                ${
-                  preview.canMulligan
-                    ? '<button class="btn-mulligan" data-action="mulligan">マリガン</button>'
-                    : ''
-                }
-                ${
-                  canSelectAll
-                    ? '<button class="btn-clear" data-action="select-all">全選択</button>'
-                    : ''
-                }
-                ${
-                  canClearSelection
-                    ? '<button class="btn-clear" data-action="clear">選択解除</button>'
-                    : ''
-                }`
+                  }
+                  ${
+                    preview.canGuard
+                      ? '<button class="btn-guard" data-action="guard">ガード</button>'
+                      : ''
+                  }
+                  ${
+                    preview.canCure
+                      ? '<button class="btn-cure" data-action="cure-debuff">治療</button>'
+                      : ''
+                  }
+                  ${
+                    preview.canKan
+                      ? '<button class="btn-kan" data-action="kan">カン</button>'
+                      : ''
+                  }
+                  ${
+                    s.riichi
+                      ? '<button class="btn-cancel-riichi" data-action="cancel-riichi">リーチ解除</button>'
+                      : preview.canRiichi
+                        ? '<button class="btn-riichi" data-action="start-riichi-select">リーチ</button>'
+                        : ''
+                  }
+                  ${
+                    canSelectAll
+                      ? '<button class="btn-clear" data-action="select-all">全選択</button>'
+                      : ''
+                  }
+                  ${
+                    canClearSelection
+                      ? '<button class="btn-clear" data-action="clear">選択解除</button>'
+                      : ''
+                  }`
         }
       </div>
       ${
@@ -771,7 +902,7 @@ export function renderBattle(v: BattleView): string {
               }
               ${
                 canCopyNow
-                  ? '<button class="btn-skill" data-action="skill-copy">複製</button>'
+                  ? `<button class="btn-skill ${ui.copyMode ? 'active' : ''}" data-action="skill-copy">複製</button>`
                   : ''
               }
               ${
@@ -791,7 +922,7 @@ export function renderBattle(v: BattleView): string {
 
     <section class="player${playerHit}${playerLvUpCls}">
       <div class="player-head">
-        <span>あなた（Lv.${s.player.level} ／ 攻撃補正 ×${(1 + s.player.level / 4).toFixed(2)}）</span>
+        <span>${getJobDef(s.job).icon}${esc(getJobDef(s.job).name)}（Lv.${s.player.level} ／ 攻撃補正 ×${(1 + s.player.level / 4).toFixed(2)}）</span>
         <span class="money-badge">💰 ${s.money.toLocaleString()} 銭</span>
         ${expBar(s.player.exp, expForNextLevel(s.player.level))}
       </div>
@@ -804,6 +935,7 @@ export function renderBattle(v: BattleView): string {
     </section>
     ${renderLevelUpModal(s, ui)}
     ${renderRewardModal(s, ui)}
+    ${renderShopModal(s, ui)}
     ${result}
     ${ui.logOpen ? renderLogModal(s) : ''}
     ${ui.showWallModal ? renderWallModal(s, ui) : ''}
@@ -814,7 +946,6 @@ export function renderBattle(v: BattleView): string {
 export {
   buildScoreContext,
   canDeclareRiichi,
-  canMulliganHand,
   findRiichiDiscards,
   getRiichiWaits,
   hasAnyPlayerDebuff,

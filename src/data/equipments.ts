@@ -26,6 +26,82 @@ export const RARITY_SCORE: Record<Rarity, number> = {
   legend: 2000,
 };
 
+/** 商店での装備購入価格 */
+export function getEquipmentBuyPrice(rarity: Rarity): number {
+  switch (rarity) {
+    case 'common':
+    case 'uncommon':
+      return 500;
+    case 'rare':
+      return 2000;
+    case 'legend':
+      return 5000;
+  }
+}
+
+/** 商店での装備売却価格（買値の半分） */
+export function getEquipmentSellPrice(rarity: Rarity): number {
+  return Math.floor(getEquipmentBuyPrice(rarity) / 2);
+}
+
+export type JobId = 'sword' | 'doctor' | 'ninja' | 'master' | 'nekomanto' | 'yukako';
+
+export interface JobDef {
+  id: JobId;
+  name: string;
+  icon: string;
+  shortDesc: string;
+  detailDesc: string;
+}
+
+export const JOBS: readonly JobDef[] = [
+  {
+    id: 'sword',
+    name: '雀剣士',
+    icon: '⚔️',
+    shortDesc: '役なし同牌セットで威力2倍＆ペア補充',
+    detailDesc: '同牌セットを含む役なし攻撃が、最終ダメージ2倍＋補充にペアを引き込む',
+  },
+  {
+    id: 'doctor',
+    name: '麻雀医',
+    icon: '🩺',
+    shortDesc: '役なし並びセットでHP10%回復＆2連補充',
+    detailDesc: '並びセットを含む役なし攻撃が、HP10%回復＋補充に2個並びを引き込む',
+  },
+  {
+    id: 'ninja',
+    name: '忍びの雀士',
+    icon: '🥷',
+    shortDesc: '字牌1セット攻撃で威力2.5倍＆チェーン+1',
+    detailDesc: '字牌の同牌セットを含む1セット攻撃が、ダメージ2.5倍＋チェーン追加1（三元牌ならチェーン2）',
+  },
+  {
+    id: 'master',
+    name: '雀老師',
+    icon: '🧙',
+    shortDesc: 'リーチ入れ替え4回＆リーチ中被ダメ半減',
+    detailDesc: 'リーチ時、1ターンの牌入れ替え数が4回になり、リーチ中は相手からのダメージを半減する',
+  },
+  {
+    id: 'nekomanto',
+    name: 'ねこまんと',
+    icon: '🐾',
+    shortDesc: '独自役「ねこぱんち」＆四対子強化',
+    detailDesc: 'ペアを含むと役「ねこぱんち（ペア数倍威力＆ペア数チェーン）」成立。四対子の効果も強化',
+  },
+  {
+    id: 'yukako',
+    name: 'ゆかこ',
+    icon: '🎀',
+    shortDesc: '独自役「つよつよこうげき（威力3倍）」',
+    detailDesc: 'セットが1つ以上あり他の役がないとき、独自役「つよつよこうげき（最終ダメージ3倍）」が成立',
+  },
+];
+
+export const getJobDef = (id: JobId): JobDef =>
+  JOBS.find((j) => j.id === id) ?? JOBS[0];
+
 export const EQUIPMENTS: readonly EquipmentDef[] = [
   // ---- コモン ----
   { id: 'hp_up_10', name: '点棒の護符', rarity: 'common', desc: '最大HP+10%' },
@@ -35,18 +111,18 @@ export const EQUIPMENTS: readonly EquipmentDef[] = [
   { id: 'atk_honor_2', name: '字牌の刻印', rarity: 'common', desc: '字牌の基礎攻撃+5' },
   { id: 'atk_term_2', name: '老頭の刻印', rarity: 'common', desc: '1・9牌の基礎攻撃+5' },
   { id: 'dmg_cut_10', name: '卓布の盾', rarity: 'common', desc: '被ダメージ-20%' },
+  { id: 'wind_east', name: '東風の紋章', rarity: 'common', desc: '「東」3枚が役になりチェーン+2', windKind: 27 },
+  { id: 'wind_south', name: '南風の紋章', rarity: 'common', desc: '「南」3枚が役になりチェーン+2', windKind: 28 },
+  { id: 'wind_west', name: '西風の紋章', rarity: 'common', desc: '「西」3枚が役になりチェーン+2', windKind: 29 },
+  { id: 'wind_north', name: '北風の紋章', rarity: 'common', desc: '「北」3枚が役になりチェーン+2', windKind: 30 },
 
   // ---- アンコモン ----
   {
     id: 'red_five_1',
     name: '赤五の宝珠',
     rarity: 'uncommon',
-    desc: '5の牌が各1枚赤牌化（金効果＋同種攻撃+5［永続］＋25銭）',
+    desc: '5の牌が各1枚赤牌化（セット使用で金効果＋同種攻撃+5［永続］＋25銭）',
   },
-  { id: 'wind_east', name: '東風の紋章', rarity: 'uncommon', desc: '「東」3枚が役になりチェーン+2', windKind: 27 },
-  { id: 'wind_south', name: '南風の紋章', rarity: 'uncommon', desc: '「南」3枚が役になりチェーン+2', windKind: 28 },
-  { id: 'wind_west', name: '西風の紋章', rarity: 'uncommon', desc: '「西」3枚が役になりチェーン+2', windKind: 29 },
-  { id: 'wind_north', name: '北風の紋章', rarity: 'uncommon', desc: '「北」3枚が役になりチェーン+2', windKind: 30 },
   {
     id: 'unlock_tanyao',
     name: '招財の算盤',
@@ -70,6 +146,7 @@ export const EQUIPMENTS: readonly EquipmentDef[] = [
 
   // ---- レア ----
   { id: 'hp_up_30', name: '黄金の点箱', rarity: 'rare', desc: '最大HP+30%' },
+  { id: 'banner_heal_20', name: '癒しの戦旗', rarity: 'rare', desc: 'レベルアップ時、HPを20%回復' },
   { id: 'flat_atk_10', name: '剛力の指輪', rarity: 'rare', desc: '攻撃時、基礎攻撃+10' },
   { id: 'always_chain_1', name: '連撃の双牌', rarity: 'rare', desc: '毎ターン追加攻撃+1回' },
   {
@@ -133,7 +210,7 @@ export const EQUIPMENTS: readonly EquipmentDef[] = [
     id: 'all_five_red',
     name: '真紅の五宝',
     rarity: 'legend',
-    desc: '5の牌がすべて赤牌化（金効果＋同種攻撃+5［永続］＋25銭）',
+    desc: '5の牌がすべて赤牌化（セット使用で金効果＋同種攻撃+5［永続］＋25銭）',
   },
   { id: 'draw_rainbow_10', name: '極彩色の天牌', rarity: 'legend', desc: '補充牌が10%で虹牌化' },
 ];

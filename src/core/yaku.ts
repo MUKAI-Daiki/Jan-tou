@@ -1,3 +1,4 @@
+import { JobId } from '../data/equipments';
 import { Decomposition, Mentsu, isSet, mentsuKinds } from './mentsu';
 import {
   Kind,
@@ -30,6 +31,8 @@ export type YakuId =
   | 'chanta'
   | 'tanyao'
   | 'four_pairs'
+  | 'neko_punch'
+  | 'tsuyotsuyo'
   | 'honiisou'
   | 'pinfu'
   | 'sanankou'
@@ -90,11 +93,13 @@ export interface JudgeContext {
   tanyaoUnlocked?: boolean;
   /** リーチ中に3セットを完成させて攻撃したか */
   isRiichiComplete?: boolean;
+  /** 現在のプレイヤーの職業 */
+  job?: JobId;
 }
 
 export interface YakuCatalogEntry {
   name: string;
-  scope: '1セット役' | '2セット役' | '3セット役' | '3セット役（役満）' | '特殊役' | '装備役';
+  scope: '1セット役' | '2セット役' | '3セット役' | '3セット役（役満）' | '特殊役' | '装備役' | '職業役';
   effect: string;
   desc: string;
   example: readonly (readonly Kind[])[];
@@ -265,16 +270,52 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
     desc: '対応する風の紋章所持時、その風牌3枚',
     example: [[27, 27, 27]],
   },
+
+  // ---- 職業独自役 ----
+  {
+    name: 'ねこぱんち（ねこまんと専用）',
+    scope: '職業役',
+    effect: '威力（ペア数）倍・チェーン（ペア数）',
+    desc: '攻撃牌の中にペアが含まれると成立',
+    example: [[4, 4], [13, 13]],
+  },
+  {
+    name: 'つよつよこうげき（ゆかこ専用）',
+    scope: '職業役',
+    effect: '威力3倍・チェーン1',
+    desc: 'セット1組以上かつ他の役がないとき成立',
+    example: [[1, 2, 3]],
+  },
 ];
 
 /**
  * 分解結果（Decomposition）に対して成立する役を判定する。
  * - 役満相当の3セット役（大三元・緑一色・字一色・三槓子）が成立した場合は他の役とは複合せず単体で返す。
- * - それ以外の役（通常3セット役・2セット役・1セット役・リーチ）はすべて複合する。
+ * - それ以外の役（通常3セット役・2セット役・1セット役・リーチ・職業独自役）はすべて複合する。
  */
 export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {}): Yaku[] {
   // 1. 四対子（ペア4組）
   if (d.isFourPairs) {
+    if (ctx.job === 'nekomanto') {
+      return [
+        {
+          id: 'four_pairs',
+          name: '四対子',
+          tier: 'special',
+          dmgMult: 2,
+          chains: 4,
+          effectText: '威力2倍・チェーン4（ねこまんと強化）',
+        },
+        {
+          id: 'neko_punch',
+          name: 'ねこぱんち',
+          tier: 1,
+          dmgMult: 4,
+          chains: 4,
+          effectText: '威力4倍・チェーン4（4ペア）',
+        },
+      ];
+    }
     return [
       {
         id: 'four_pairs',
@@ -289,7 +330,22 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
 
   const ms = d.sets;
   const n = ms.length;
-  if (n === 0) return [];
+  if (n === 0) {
+    if (ctx.job === 'nekomanto' && d.pairs.length > 0) {
+      const pCount = d.pairs.length;
+      return [
+        {
+          id: 'neko_punch',
+          name: 'ねこぱんち',
+          tier: 1,
+          dmgMult: pCount,
+          chains: pCount,
+          effectText: `威力${pCount}倍・チェーン${pCount}（${pCount}ペア）`,
+        },
+      ];
+    }
+    return [];
+  }
 
   const kinds = ms.flatMap(mentsuKinds);
   const sets = ms.filter(isSet);
@@ -527,6 +583,31 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         effectText: '威力1.5倍',
       });
     }
+  }
+
+  // ねこまんと専用役：ねこぱんち（ペアが含まれると成立）
+  if (ctx.job === 'nekomanto' && d.pairs.length > 0) {
+    const pCount = d.pairs.length;
+    yaku.push({
+      id: 'neko_punch',
+      name: 'ねこぱんち',
+      tier: 1,
+      dmgMult: pCount,
+      chains: pCount,
+      effectText: `威力${pCount}倍・チェーン${pCount}（${pCount}ペア）`,
+    });
+  }
+
+  // ゆかこ専用役：つよつよこうげき（セット1つ以上、かつ他の役がない場合に成立）
+  if (ctx.job === 'yukako' && n >= 1 && yaku.length === 0) {
+    yaku.push({
+      id: 'tsuyotsuyo',
+      name: 'つよつよこうげき',
+      tier: 1,
+      dmgMult: 3,
+      chains: 1,
+      effectText: '威力3倍・チェーン1',
+    });
   }
 
   return yaku;
