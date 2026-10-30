@@ -25,8 +25,8 @@ import { Preview, UiState, renderBattle, renderTitle } from './ui/render';
 
 const app = document.getElementById('app')!;
 
-const PLAYER_CHAR_MS = 44; // 文字送りスピードを半分（間隔2倍）に
-const MONSTER_CHAR_MS = 88; // 敵の文字送りスピードもさらに半分（間隔2倍）に
+const PLAYER_CHAR_MS = 44; // プレイヤーの文字送り間隔
+const MONSTER_CHAR_MS = 58; // 敵の文字送り速さを50%アップ（88ms → 58ms）
 const ENEMY_WAIT_MS = 300; // 敵ターンの各節目の0.3秒ウェイト
 const SLIDE_OUT_MS = 220; // 行移行時のスライドアウト時間
 const SLIDE_IN_WAIT_MS = 220; // 行移行時のスライドイン＆ウェイト時間
@@ -366,23 +366,22 @@ function computePreview(s: BattleState): Preview {
           ? waits
               .map((k) => {
                 const rem = s.wall.filter((t) => kindOf(t) === k).length;
-                return `${kindName(k)}(残${rem}枚)`;
+                return `${kindName(k)}(残${rem})`;
               })
               .join('・')
           : 'なし';
       return {
         ...none,
         canConfirmRiichi: true,
-        text: `🔥【リーチ捨て牌：${kindName(kindOf(discardTile))}】 → 待ち牌：${waitStr}`,
-        subText:
-          '「この牌を切ってリーチ確定！」を押すと、1ターン最大3枚まで自動入れ替えを開始します（リーチ中は受けるダメージ半減！）',
+        text: `捨て牌：${kindName(kindOf(discardTile))} → 待ち：${waitStr}`,
+        subText: '「リーチ確定」で開始（被ダメ半減・毎ターン最大3枚入替）',
       };
     }
     return {
       ...none,
       canConfirmRiichi: false,
-      text: '🔥 リーチ宣言モード：光っている牌の中から、最初に捨てる牌を1枚クリックして選んでください',
-      subText: '捨てる牌によって待ち牌（3セット完成に必要な牌）が変わります（リーチ中は被ダメージ半減・1ターン最大3枚入替）',
+      text: 'リーチ：最初に捨てる牌を1枚選択',
+      subText: 'リーチ中は被ダメ半減・毎ターン最大3枚自動入替',
     };
   }
 
@@ -392,16 +391,13 @@ function computePreview(s: BattleState): Preview {
       return {
         ...none,
         text: completed
-          ? '🎉【リーチ完成】3セットが揃いました！全選択して「攻撃」で「リーチ」役成立（威力2倍＆チェーン＆補充30%金牌化）！'
-          : `🔄【リーチ中（被ダメージ半減）】右端の自摸牌を自動でツモ切りしています（${Math.min(
-              3,
-              s.riichiSwapsThisTurn + 1,
-            )}/3枚目）…`,
+          ? 'リーチ完成！全選択して攻撃（威力2倍・チェーン・補充30%金化）'
+          : `リーチ中：右端の牌を自動入替中（${Math.min(3, s.riichiSwapsThisTurn + 1)}/3枚目）`,
       };
     }
     return {
       ...none,
-      text: '任意の枚数の牌を選んで「攻撃」してください（セット・役が含まれるとボーナス＆チェーン発生！）',
+      text: '牌を選んで攻撃（セット・役で威力UP＆連続行動）',
     };
   }
 
@@ -409,10 +405,9 @@ function computePreview(s: BattleState): Preview {
     const t = tiles[0];
     return {
       ...none,
-      text: `🔄【リーチ自摸切り（${Math.min(
-        3,
-        s.riichiSwapsThisTurn + 1,
-      )}/3枚目）】自摸牌「${t !== undefined ? kindName(kindOf(t)) : ''}」を切って次の牌をツモります…`,
+      text: `リーチ入替（${Math.min(3, s.riichiSwapsThisTurn + 1)}/3）：「${
+        t !== undefined ? kindName(kindOf(t)) : ''
+      }」を切ってツモ`,
     };
   }
 
@@ -442,10 +437,10 @@ function computePreview(s: BattleState): Preview {
   const koutsuCount = ev.decomp.sets.filter((m) => m.type === 'koutsu').length;
   const shuntsuCount = ev.decomp.sets.filter((m) => m.type === 'shuntsu').length;
   const pairCount = ev.decomp.pairs.length;
-  if (kantsuCount > 0) parts.push(`カン×${kantsuCount}(+${kantsuCount * 30}/基礎+50%)`);
-  if (koutsuCount > 0) parts.push(`同牌セット×${koutsuCount}(+${koutsuCount * 20})`);
-  if (shuntsuCount > 0) parts.push(`並びセット×${shuntsuCount}(+${shuntsuCount * 10})`);
-  if (pairCount > 0) parts.push(`ペア×${pairCount}(+${pairCount * 5})`);
+  if (kantsuCount > 0) parts.push(`カン×${kantsuCount}`);
+  if (koutsuCount > 0) parts.push(`同牌×${koutsuCount}`);
+  if (shuntsuCount > 0) parts.push(`並び×${shuntsuCount}`);
+  if (pairCount > 0) parts.push(`ペア×${pairCount}`);
   if (ev.decomp.singles.length > 0) parts.push(`単牌×${ev.decomp.singles.length}`);
 
   const yakuStr =
@@ -458,25 +453,25 @@ function computePreview(s: BattleState): Preview {
   const actionWord = s.healMode ? '回復' : 'ダメージ';
   const chainNotice =
     ev.gainedChains > 0
-      ? ` ／ ⚡チェーン+${ev.gainedChains}発生！`
+      ? ` ／ チェーン+${ev.gainedChains}`
       : s.extraChains > 0
-        ? ` ／ ⚡ストックにより連続行動可`
+        ? ` ／ 連続行動可`
         : '';
 
   const text = `${yakuStr} → ${ev.damage.toLocaleString()} ${actionWord}${chainNotice}`;
-  const setMultNote = ev.setCountMult > 1 ? ` ｜ セット数倍率 ×${ev.setCountMult}` : '';
+  const setMultNote = ev.setCountMult > 1 ? ` ｜ 倍率×${ev.setCountMult}` : '';
   const basicSetNote =
     ev.yaku.length === 0 && ev.decomp.sets.length > 0
-      ? `${ev.basicDrawPairs > 0 ? ` ｜ 同牌基礎+${ev.basicDrawPairs * 50}%＆ペア×${ev.basicDrawPairs}補充` : ''}${
+      ? `${ev.basicDrawPairs > 0 ? ` ｜ 基礎+${ev.basicDrawPairs * 50}%・ペア×${ev.basicDrawPairs}補充` : ''}${
           ev.basicDrawSeq2 > 0
-            ? ` ｜ 並びHP+${Math.round(ev.basicShuntsuHealRate * 100)}%回復＆2枚並び×${ev.basicDrawSeq2}補充`
+            ? ` ｜ HP+${Math.round(ev.basicShuntsuHealRate * 100)}%・2枚並び×${ev.basicDrawSeq2}補充`
             : ''
         }`
       : '';
-  const yakuExpNote = ev.yakuExp > 0 ? ` ｜ 役EXP +${Math.round(ev.yakuExp * s.expMult)}` : '';
-  const goldNote = ev.goldCount > 0 ? ` ｜ 金/赤牌×${ev.goldCount}(+${ev.goldCount * 50}%)` : '';
-  const rainbowNote = ev.rainbowCount > 0 ? ` ｜ 虹牌×${ev.rainbowCount}` : '';
-  const subText = `構成: ${parts.join('・')} ｜ 基礎攻撃力 ${guardAmount}（牌 ${ev.tilePower} + ボーナス ${ev.setBonus}）${setMultNote}${basicSetNote}${yakuExpNote}${goldNote}${rainbowNote}`;
+  const yakuExpNote = ev.yakuExp > 0 ? ` ｜ EXP+${Math.round(ev.yakuExp * s.expMult)}` : '';
+  const goldNote = ev.goldCount > 0 ? ` ｜ 金/赤+${ev.goldCount * 50}%` : '';
+  const rainbowNote = ev.rainbowCount > 0 ? ` ｜ 虹×${ev.rainbowCount}` : '';
+  const subText = `${parts.join('・')} ｜ 基礎 ${guardAmount}（牌${ev.tilePower}+加点${ev.setBonus}）${setMultNote}${basicSetNote}${yakuExpNote}${goldNote}${rainbowNote}`;
 
   return {
     text,

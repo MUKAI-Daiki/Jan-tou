@@ -94,42 +94,42 @@ export interface JudgeContext {
 
 export interface YakuCatalogEntry {
   name: string;
-  scope: '1セット役' | '2セット役' | '3セット役' | '3セット役（役満・非複合）' | '特殊役' | '装備解禁役';
+  scope: '1セット役' | '2セット役' | '3セット役' | '3セット役（役満）' | '特殊役' | '装備役';
   effect: string;
   desc: string;
   example: readonly (readonly Kind[])[];
   highTier?: boolean;
 }
 
-/** UI表示用の役一覧カタログ（初心者向け用語＆具体例つき） */
+/** UI表示用の役一覧カタログ（シンプル表記＆具体例つき） */
 export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
   // ---- 1セット役 ----
   {
-    name: '白セット（白3枚）',
+    name: '白セット',
     scope: '1セット役',
-    effect: '次の敵ダメージを無効化 ＋ チェーン1',
-    desc: '「白」の同牌セット（3枚）またはカンを含めて攻撃',
+    effect: '次被ダメ無効・チェーン1',
+    desc: '「白」3枚（またはカン）',
     example: [[31, 31, 31]],
   },
   {
-    name: '發セット（發3枚）',
+    name: '發セット',
     scope: '1セット役',
-    effect: '今回のダメージ2倍 ＋ チェーン1',
-    desc: '「發」の同牌セット（3枚）またはカンを含めて攻撃',
+    effect: '威力2倍・チェーン1',
+    desc: '「發」3枚（またはカン）',
     example: [[32, 32, 32]],
   },
   {
-    name: '中セット（中3枚）',
+    name: '中セット',
     scope: '1セット役',
-    effect: '補充牌3枚を金牌にする ＋ 30銭獲得 ＋ チェーン1',
-    desc: '「中」の同牌セット（3枚）またはカンを含めて攻撃',
+    effect: '補充3枚金化・+30銭・チェーン1',
+    desc: '「中」3枚（またはカン）',
     example: [[33, 33, 33]],
   },
   {
     name: 'リーチ',
     scope: '1セット役',
-    effect: 'ダメージ2倍 ＋ 補充牌30%金牌化 ＋ チェーン1',
-    desc: 'リーチ宣言後、3セットを揃えて攻撃すると役として成立（他の役とも複合）',
+    effect: '威力2倍・補充30%金化・チェーン1',
+    desc: 'リーチ中に3セット完成で攻撃',
     example: [[0, 1, 2], [12, 13, 14], [20, 21, 22]],
   },
 
@@ -137,132 +137,132 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
   {
     name: 'タンヤオ',
     scope: '2セット役',
-    effect: 'ダメージ1.5倍 ＋ チェーン1',
-    desc: '2セット以上すべて2〜8の数牌で構成（装備なしで常時発動可能）',
+    effect: '威力1.5倍・チェーン1',
+    desc: '2〜8の数牌のみで2セット以上',
     example: [[1, 2, 3], [12, 12, 12]],
   },
   {
-    name: '一盃口（イーペーコー）',
+    name: '一盃口',
     scope: '2セット役',
-    effect: 'ペア（2枚組）を3セット補充 ＋ チェーン1',
-    desc: '同じ種類・同じ数字の並びセット2組',
+    effect: 'ペア3組補充・チェーン1',
+    desc: '同種・同数字の並びセット2組',
     example: [[0, 1, 2], [0, 1, 2]],
   },
   {
     name: '二色同順',
     scope: '2セット役',
-    effect: '次のチェーンの倍率が2倍 ＋ チェーン1',
-    desc: '異なる種類の数牌で、同じ数字の並びセット2組',
+    effect: '次チェーン倍率2倍・チェーン1',
+    desc: '異種・同数字の並びセット2組',
     example: [[1, 2, 3], [10, 11, 12]],
   },
   {
     name: '二色同刻',
     scope: '2セット役',
-    effect: '次のチェーンの倍率が3倍 ＋ チェーン1',
-    desc: '異なる種類の数牌で、同じ数字の同牌セット2組',
+    effect: '次チェーン倍率3倍・チェーン1',
+    desc: '異種・同数字の同牌セット2組',
     example: [[4, 4, 4], [13, 13, 13]],
   },
   {
     name: '二暗刻',
     scope: '2セット役',
-    effect: '補充に同牌セット（3枚組）が含まれる ＋ チェーン1',
-    desc: '同牌セット（またはカン）を2組以上',
+    effect: '同牌セット1組補充・チェーン1',
+    desc: '同牌セット（またはカン）2組以上',
     example: [[1, 1, 1], [24, 24, 24]],
   },
   {
     name: 'チャンタ',
     scope: '2セット役',
-    effect: '手牌と補充牌の1・9・字牌が金牌化 ＋ 50銭獲得 ＋ チェーン1',
-    desc: '2セット以上すべてに1・9・字牌が含まれる組み合わせ',
+    effect: '手牌と補充の1・9・字牌を金化・+50銭・チェーン1',
+    desc: '全セットに1・9・字牌を含む2セット以上',
     example: [[0, 1, 2], [27, 27, 27]],
   },
 
   // ---- 特殊役 ----
   {
-    name: '四対子（ペア4組）',
+    name: '四対子',
     scope: '特殊役',
-    effect: '4回のチェーンを重ねることができる（チェーン4）',
-    desc: '異なるペア（2枚組）を4つ（計8枚、同牌3枚を含まない）',
+    effect: 'チェーン4',
+    desc: '異なるペア4組（計8枚）',
     example: [[1, 1], [12, 12], [20, 20], [31, 31]],
   },
 
   // ---- 3セット役（他の役とも複合可能） ----
   {
-    name: '混一色（ホンイツ）',
+    name: '混一色',
     scope: '3セット役',
-    effect: '5ターンの間、字牌は金牌として補充される ＋ チェーン1',
-    desc: '3セットが1種類の数牌と字牌のみで構成（他の役とも複合可）',
+    effect: '5T字牌を金で補充・チェーン1',
+    desc: '1種の数牌＋字牌で3セット',
     example: [[0, 1, 2], [4, 5, 6], [27, 27, 27]],
   },
   {
-    name: '平和（ピンフ）',
+    name: '平和',
     scope: '3セット役',
-    effect: '5ターンの間、毎ターンHPが自動回復する ＋ チェーン1',
-    desc: '並びセット（連続する数牌3枚）3組で成立（他の役とも複合可）',
+    effect: '5T毎ターンHP回復・チェーン1',
+    desc: '並びセット3組',
     example: [[0, 1, 2], [12, 13, 14], [20, 21, 22]],
   },
   {
-    name: '三暗刻（サンアンコー）',
+    name: '三暗刻',
     scope: '3セット役',
-    effect: '5ターンの間、ダメージが3倍になる ＋ チェーン1',
-    desc: '同牌セット（またはカン）3組で成立（他の役とも複合可）',
+    effect: '5T威力3倍・チェーン1',
+    desc: '同牌セット（またはカン）3組',
     example: [[1, 1, 1], [13, 13, 13], [25, 25, 25]],
   },
   {
-    name: '清老頭（チンロートー）',
+    name: '清老頭',
     scope: '3セット役',
-    effect: '5ターンの間、補充がすべて2〜8の数牌＆30%金牌化 ＋ 150銭獲得 ＋ チェーン1',
-    desc: '3セットすべてが1・9の数牌のみで構成（他の役とも複合可）',
+    effect: '5T補充が2〜8＆30%金化・+150銭・チェーン1',
+    desc: '1・9の数牌のみで3セット',
     example: [[0, 0, 0], [8, 8, 8], [17, 17, 17]],
   },
   {
-    name: '清一色（チンイツ）',
+    name: '清一色',
     scope: '3セット役',
-    effect: '5ターンの間、残り牌外から成立した種類の数牌が補充される ＋ チェーン1',
-    desc: '3セットすべてが同じ種類の数牌（萬子 / 筒子 / 索子）のみで構成（他の役とも複合可）',
+    effect: '5T山外から同種数牌を補充・チェーン1',
+    desc: '同種の数牌のみで3セット',
     example: [[9, 10, 11], [12, 13, 14], [16, 16, 16]],
   },
 
   // ---- 3セット役（役満相当・非複合） ----
   {
-    name: '大三元（ダイサンゲン）',
-    scope: '3セット役（役満・非複合）',
-    effect: 'ダメージ10倍 ＋ アンコモン以上の装備3つ獲得 ＋ 祝儀500銭 ＋ チェーン1',
-    desc: '白・發・中の同牌セット（またはカン）3組',
+    name: '大三元',
+    scope: '3セット役（役満）',
+    effect: '威力10倍・装備3個獲得・+500銭・チェーン1',
+    desc: '白・發・中のセット3組（非複合）',
     example: [[31, 31, 31], [32, 32, 32], [33, 33, 33]],
     highTier: true,
   },
   {
-    name: '緑一色（リューイーソー）',
-    scope: '3セット役（役満・非複合）',
-    effect: 'ダメージ10倍 ＋ 自分のHP全回復 ＋ 祝儀500銭 ＋ チェーン1',
-    desc: '索子の2・3・4・6・8と發のみで3セットを構成',
+    name: '緑一色',
+    scope: '3セット役（役満）',
+    effect: '威力10倍・HP全回復・+500銭・チェーン1',
+    desc: '索子2・3・4・6・8と發のみで3セット（非複合）',
     example: [[19, 20, 21], [23, 23, 23], [32, 32, 32]],
     highTier: true,
   },
   {
-    name: '字一色（ツーイーソー）',
-    scope: '3セット役（役満・非複合）',
-    effect: 'ダメージ10倍 ＋ その場でレベル+3 ＋ 祝儀500銭 ＋ チェーン1',
-    desc: '字牌（東南西北白發中）のみで3セットを構成',
+    name: '字一色',
+    scope: '3セット役（役満）',
+    effect: '威力10倍・即時Lv+3・+500銭・チェーン1',
+    desc: '字牌のみで3セット（非複合）',
     example: [[27, 27, 27], [28, 28, 28], [31, 31, 31]],
     highTier: true,
   },
   {
-    name: '三槓子（サンカンツ）',
-    scope: '3セット役（役満・非複合）',
-    effect: 'ダメージ10倍 ＋ レジェンド装備1つ獲得 ＋ バトル経験値30倍 ＋ 祝儀500銭 ＋ チェーン1',
-    desc: 'カン（4枚組）3セットで攻撃',
+    name: '三槓子',
+    scope: '3セット役（役満）',
+    effect: '威力10倍・伝説装備1個・EXP30倍・+500銭・チェーン1',
+    desc: 'カン3組（非複合）',
     example: [[1, 1, 1, 1], [13, 13, 13, 13], [25, 25, 25, 25]],
     highTier: true,
   },
 
   // ---- 装備解禁役 ----
   {
-    name: '風牌セット（装備解禁）',
-    scope: '装備解禁役',
-    effect: '2回のチェーンを重ねることができる（チェーン2）',
-    desc: '対応する「風の紋章」装備所持時、その風牌（東/南/西/北）の同牌セットで成立',
+    name: '風牌セット',
+    scope: '装備役',
+    effect: 'チェーン2',
+    desc: '対応する風の紋章所持時、その風牌3枚',
     example: [[27, 27, 27]],
   },
 ];
@@ -307,7 +307,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           tier: 3,
           dmgMult: 10,
           chains: 1,
-          effectText: 'ダメージ10倍・レジェンド装備1つ獲得・バトル経験値30倍・祝儀500銭',
+          effectText: '威力10倍・伝説装備1・EXP30倍・+500銭',
         },
       ];
     }
@@ -319,7 +319,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           tier: 3,
           dmgMult: 10,
           chains: 1,
-          effectText: 'ダメージ10倍・アンコモン以上の装備3つ獲得・祝儀500銭',
+          effectText: '威力10倍・装備3個・+500銭',
         },
       ];
     }
@@ -331,7 +331,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           tier: 3,
           dmgMult: 10,
           chains: 1,
-          effectText: 'ダメージ10倍・HP全回復・祝儀500銭',
+          effectText: '威力10倍・HP全回復・+500銭',
         },
       ];
     }
@@ -343,7 +343,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           tier: 3,
           dmgMult: 10,
           chains: 1,
-          effectText: 'ダメージ10倍・その場でレベル+3・祝儀500銭',
+          effectText: '威力10倍・Lv+3・+500銭',
         },
       ];
     }
@@ -359,7 +359,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
       tier: 1,
       dmgMult: 2,
       chains: 1,
-      effectText: 'ダメージ2倍・補充牌30%金牌化',
+      effectText: '威力2倍・補充30%金化',
     });
   }
 
@@ -372,7 +372,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 3,
         dmgMult: 1,
         chains: 1,
-        effectText: '5ターン補充が2〜8の数牌＆30%金牌化＋150銭',
+        effectText: '5T補充2〜8＆30%金化・+150銭',
       });
     }
 
@@ -386,7 +386,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 3,
         dmgMult: 1,
         chains: 1,
-        effectText: `5ターン残り牌外から${suitName(suit)}が補充される`,
+        effectText: `5T山外から${suitName(suit)}補充`,
         suit,
       });
     }
@@ -397,7 +397,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 3,
         dmgMult: 1,
         chains: 1,
-        effectText: '5ターンダメージ3倍',
+        effectText: '5T威力3倍',
       });
     }
     if (hasHonor && numberSuits.size === 1) {
@@ -407,7 +407,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 3,
         dmgMult: 1,
         chains: 1,
-        effectText: '5ターン字牌が金牌として補充される',
+        effectText: '5T字牌を金で補充',
       });
     }
     if (allShuntsu) {
@@ -417,7 +417,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 3,
         dmgMult: 1,
         chains: 1,
-        effectText: '5ターンHP自動回復',
+        effectText: '5T HP自動回復',
       });
     }
   }
@@ -425,11 +425,11 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
   // 1セット役：三元牌
   for (const m of dragonSets) {
     if (m.kind === 31) {
-      yaku.push({ id: 'haku', name: '白セット', tier: 1, dmgMult: 1, chains: 1, effectText: '次の被ダメージ無効化' });
+      yaku.push({ id: 'haku', name: '白セット', tier: 1, dmgMult: 1, chains: 1, effectText: '次被ダメ無効' });
     } else if (m.kind === 32) {
-      yaku.push({ id: 'hatsu', name: '發セット', tier: 1, dmgMult: 2, chains: 1, effectText: 'ダメージ2倍' });
+      yaku.push({ id: 'hatsu', name: '發セット', tier: 1, dmgMult: 2, chains: 1, effectText: '威力2倍' });
     } else if (m.kind === 33) {
-      yaku.push({ id: 'chun', name: '中セット', tier: 1, dmgMult: 1, chains: 1, effectText: '補充牌3枚を金牌化＋30銭' });
+      yaku.push({ id: 'chun', name: '中セット', tier: 1, dmgMult: 1, chains: 1, effectText: '補充3枚金化・+30銭' });
     }
   }
 
@@ -444,7 +444,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           tier: 1,
           dmgMult: 1,
           chains: 2,
-          effectText: '2回チェーン可能',
+          effectText: 'チェーン2',
         });
       }
     }
@@ -461,7 +461,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 2,
         dmgMult: 1,
         chains: 1,
-        effectText: 'ペア3組を補充',
+        effectText: 'ペア3組補充',
       });
     }
 
@@ -475,7 +475,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 2,
         dmgMult: 1,
         chains: 1,
-        effectText: '次のチェーン倍率2倍',
+        effectText: '次チェーン倍率2倍',
       });
     }
 
@@ -490,7 +490,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 2,
         dmgMult: 1,
         chains: 1,
-        effectText: '次のチェーン倍率3倍',
+        effectText: '次チェーン倍率3倍',
       });
     }
 
@@ -501,7 +501,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 2,
         dmgMult: 1,
         chains: 1,
-        effectText: '補充に同牌セットが含まれる',
+        effectText: '同牌セット補充',
       });
     }
 
@@ -512,7 +512,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 2,
         dmgMult: 1,
         chains: 1,
-        effectText: '手牌と補充牌の1・9・字牌が金牌化＋50銭',
+        effectText: '1・9・字牌を金化・+50銭',
       });
     }
 
@@ -524,7 +524,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 2,
         dmgMult: 1.5,
         chains: 1,
-        effectText: 'ダメージ1.5倍',
+        effectText: '威力1.5倍',
       });
     }
   }

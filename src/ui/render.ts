@@ -170,31 +170,26 @@ function renderYakuModal(state?: BattleState): string {
       </div>`
     : '';
 
-  const rows = YAKU_CATALOG.map(
-    (y) => `<tr class="${y.highTier ? 'yakuman-row' : ''}">
-      <td class="y-name">${esc(y.name)}</td>
-      <td class="y-scope">${esc(y.scope)}</td>
-      <td class="y-han">${esc(y.effect)}</td>
-      <td class="y-desc">
-        <div>${esc(y.desc)}</div>
-        ${renderExampleTiles(y.example)}
-      </td>
-    </tr>`,
+  const cards = YAKU_CATALOG.map(
+    (y) => `<div class="yaku-card${y.highTier ? ' yakuman-card' : ''}">
+      <div class="y-card-head">
+        <span class="y-name">${esc(y.name)}</span>
+        <span class="y-scope">${esc(y.scope)}</span>
+      </div>
+      <div class="y-han">効果：${esc(y.effect)}</div>
+      <div class="y-desc">条件：${esc(y.desc)}</div>
+      ${renderExampleTiles(y.example)}
+    </div>`,
   ).join('');
   return `<div class="overlay" data-action="close-yaku">
     <div class="yaku-modal" data-stop>
       <div class="yaku-modal-head">
-        <h2>役と効果一覧（具体例つき）</h2>
+        <h2>役・効果一覧</h2>
         <button class="btn-clear btn-sm" data-action="close-yaku">閉じる</button>
       </div>
       ${currentHandBar}
-      <div class="yaku-table-wrap">
-        <table class="yaku-table">
-          <thead>
-            <tr><th>役名</th><th>区分</th><th>効果・チェーン</th><th>条件・具体例</th></tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
+      <div class="yaku-card-list">
+        ${cards}
       </div>
     </div>
   </div>`;
@@ -210,19 +205,19 @@ export function renderTitle(showYakuModal = false): string {
   ).join('');
   return `<main class="title">
     <h1>雀闘<span class="kari">：改</span></h1>
-    <p class="sub">牌を束ね、役の効果とチェーンで${MAX_STAGE}連戦を勝ち抜け。</p>
+    <p class="sub">牌を束ね、役とチェーンで${MAX_STAGE}連戦を勝ち抜け。</p>
     <div class="start-hero">
-      <button class="btn-start-main" data-monster="${MONSTERS[0].id}">${MAX_STAGE}連戦を開始する（第1戦〜）</button>
-      <button class="btn-yaku" data-action="open-yaku">📖 役と効果一覧を見る</button>
+      <button class="btn-start-main" data-monster="${MONSTERS[0].id}">${MAX_STAGE}連戦を開始</button>
+      <button class="btn-yaku" data-action="open-yaku">役・効果一覧</button>
     </div>
     <section class="rules">
       <ul>
-        <li><b>全34種136枚</b>を使用。手牌は9枚。「打牌」はなく、<b>任意の枚数の牌を選んで「攻撃」</b>し、使った枚数だけ補充される。</li>
-        <li><b>牌の攻撃力とセット強化</b>：1・9・字牌は<b>10</b>、2〜8はその数字。セット数に応じて最終ダメージが<b>1セット1.5倍 ／ 2セット2倍 ／ 3セット3倍</b>（役とも複合）！さらに<b>“セットのみ”（役なし）</b>の時は、<b>同牌セットで基礎攻撃力+50%＆ペア補充</b>、<b>並びセットでHP10%回復＆2枚並び補充</b>が発動。</li>
-        <li><b>役とチェーン</b>：攻撃に「役」が含まれると固有の<b>効果</b>が発動し、<b>チェーン（連続攻撃）</b>が発生！<b>役満相当以外の役はすべて複合</b>し、<b>タンヤオも初期状態から使用可能</b>。</li>
-        <li><b>特殊牌と「銭」</b>：<b>金牌</b>（最終威力+50%）・<b>赤牌</b>（金牌効果＋同種牌の基礎攻撃+5永続）・<b>虹牌</b>（最終威力2倍＆チェーン+2）を攻撃に使うと即座に<b>銭</b>を獲得！敵撃破・役満ご祝儀・一部役や装備でも銭が貯まる。</li>
-        <li><b>カン・リーチ・マリガン</b>：同種4枚で<b>カン</b>（キープ＋金牌1枚補充、2セット役以上で使用可）。あと1枚で3セットが揃う時は捨て牌を1枚選んで<b>リーチ</b>宣言可（<b>被ダメージ半減</b>、<b>1ターン最大3枚まで自動入れ替え</b>、3セット完成で<b>「リーチ」役（威力2倍＆チェーン＋補充牌30%金牌化）</b>が成立！牌封印や手牌破壊を受けた場合はノーリスクで自動解除）。</li>
-        <li><b>${MAX_STAGE}連戦・成長・スコア</b>：与ダメージ＆役成立でレベルアップし、勝利ごとに<b>ユニーク装備</b>を獲得。ゲーム終了時には到達ステージ・レベル・成立役・所持装備から<b>最終スコア</b>とボーナス銭が算出される！</li>
+        <li><b>基本ルール</b>：全34種136枚・手牌9枚。任意の枚数を選んで<b>攻撃</b>し、同数を補充する。</li>
+        <li><b>攻撃力とセット強化</b>：1・9・字牌は<b>10</b>、2〜8はその数字。セット数に応じ最終威力<b>1.5倍／2倍／3倍</b>。役なしの<b>同牌セット</b>は基礎+50%＆ペア補充、<b>並びセット</b>はHP10%回復＆2枚並び補充。</li>
+        <li><b>役とチェーン</b>：役成立で固有効果＆<b>チェーン（連続攻撃）</b>発生。役満以外の役はすべて複合、タンヤオも常時発動可。</li>
+        <li><b>特殊牌と銭</b>：<b>金牌</b>（威力+50%）・<b>赤牌</b>（金効果＋同種攻撃+5永続）・<b>虹牌</b>（威力2倍＆チェーン+2）の使用や敵撃破・役満で<b>銭</b>を獲得。</li>
+        <li><b>カン・リーチ</b>：同種4枚で<b>カン</b>（金牌1枚補充、2セット役以上で使用可）。あと1枚で3セット揃う時は<b>リーチ</b>可（被ダメ半減・毎ターン最大3枚入替・完成で<b>リーチ役</b>成立）。</li>
+        <li><b>成長とスコア</b>：経験値でLvUP、勝利ごとに<b>ユニーク装備</b>を獲得。終了時に到達戦・Lv・成立役・装備から<b>最終スコア</b>を算出。</li>
       </ul>
     </section>
     <h2>ステージを選択して開始</h2>
@@ -234,48 +229,48 @@ export function renderTitle(showYakuModal = false): string {
 function renderBuffBadges(s: BattleState): string {
   const badges: string[] = [];
   const b = s.buffs;
-  if (s.riichi) badges.push('<span class="badge buff">リーチ宣言中(被ダメ半減)</span>');
+  if (s.riichi) badges.push('<span class="badge buff">リーチ(被ダメ半減)</span>');
   if (s.healMode) badges.push('<span class="badge buff">回復変換ON</span>');
-  if (b.nullifyDamage) badges.push('<span class="badge buff">白障壁(次ダメージ無効)</span>');
-  if (b.guardBarrier > 0) badges.push(`<span class="badge buff">ガード軽減(-${b.guardBarrier})</span>`);
-  if (b.sanankouTurns > 0) badges.push(`<span class="badge buff">三暗刻:威力3倍(${b.sanankouTurns}T)</span>`);
-  if (b.honiisouTurns > 0) badges.push(`<span class="badge buff">混一色:字牌金化(${b.honiisouTurns}T)</span>`);
-  if (b.pinfuTurns > 0) badges.push(`<span class="badge buff">平和:自動回復(${b.pinfuTurns}T)</span>`);
-  if (b.chinroutouTurns > 0) badges.push(`<span class="badge buff">清老頭:2-8補充(${b.chinroutouTurns}T)</span>`);
+  if (b.nullifyDamage) badges.push('<span class="badge buff">白障壁</span>');
+  if (b.guardBarrier > 0) badges.push(`<span class="badge buff">ガード-${b.guardBarrier}</span>`);
+  if (b.sanankouTurns > 0) badges.push(`<span class="badge buff">三暗刻(${b.sanankouTurns}T)</span>`);
+  if (b.honiisouTurns > 0) badges.push(`<span class="badge buff">混一色(${b.honiisouTurns}T)</span>`);
+  if (b.pinfuTurns > 0) badges.push(`<span class="badge buff">平和(${b.pinfuTurns}T)</span>`);
+  if (b.chinroutouTurns > 0) badges.push(`<span class="badge buff">清老頭(${b.chinroutouTurns}T)</span>`);
   if (b.chiniisouTurns > 0 && b.chiniisouSuit) {
-    badges.push(`<span class="badge buff">清一色:${suitName(b.chiniisouSuit)}補充(${b.chiniisouTurns}T)</span>`);
+    badges.push(`<span class="badge buff">清一色:${suitName(b.chiniisouSuit)}(${b.chiniisouTurns}T)</span>`);
   }
-  if (s.expMult > 1) badges.push(`<span class="badge buff">経験値×${s.expMult}</span>`);
+  if (s.expMult > 1) badges.push(`<span class="badge buff">EXP×${s.expMult}</span>`);
   const groups: TileGroup[] = ['m', 'p', 's', 'wind', 'dragon'];
   for (const g of groups) {
     const val = s.bonusTileAtk?.[g] ?? 0;
     if (val > 0) {
       const shortLabel =
         g === 'm' ? '萬子' : g === 'p' ? '筒子' : g === 's' ? '索子' : g === 'wind' ? '風牌' : '三元牌';
-      badges.push(`<span class="badge buff">${shortLabel}攻撃+${val}</span>`);
+      badges.push(`<span class="badge buff">${shortLabel}+${val}</span>`);
     }
   }
 
   if (b.sealYakuTurns > 0) badges.push(`<span class="badge debuff">役封印(${b.sealYakuTurns}T)</span>`);
-  if (b.atkDownTurns > 0) badges.push(`<span class="badge debuff">攻撃力-10(${b.atkDownTurns}T)</span>`);
-  if (b.slowTurns > 0) badges.push(`<span class="badge debuff">鈍化:チェーン完全封じ(${b.slowTurns}T)</span>`);
-  if (b.venomTurns > 0) badges.push(`<span class="badge debuff">猛毒:攻撃-20/HP-10%(${b.venomTurns}T)</span>`);
+  if (b.atkDownTurns > 0) badges.push(`<span class="badge debuff">攻撃-10(${b.atkDownTurns}T)</span>`);
+  if (b.slowTurns > 0) badges.push(`<span class="badge debuff">鈍化(${b.slowTurns}T)</span>`);
+  if (b.venomTurns > 0) badges.push(`<span class="badge debuff">猛毒(${b.venomTurns}T)</span>`);
   return badges.join('');
 }
 
 function renderEnemyBuffBadges(s: BattleState): string {
   const eb = s.enemyBuffs;
   const badges: string[] = [];
-  if (eb.charged) badges.push('<span class="badge debuff">ためる(次ダメージ3倍)</span>');
-  if (eb.defendTurns > 0) badges.push(`<span class="badge debuff">防御:ダメージ半減(${eb.defendTurns}T)</span>`);
-  if (eb.reflectTurns > 0) badges.push(`<span class="badge debuff">反射:半返し(${eb.reflectTurns}T)</span>`);
+  if (eb.charged) badges.push('<span class="badge debuff">ためる(次3倍)</span>');
+  if (eb.defendTurns > 0) badges.push(`<span class="badge debuff">防御(${eb.defendTurns}T)</span>`);
+  if (eb.reflectTurns > 0) badges.push(`<span class="badge debuff">反射(${eb.reflectTurns}T)</span>`);
   return badges.join('');
 }
 
 function renderLevelUpModal(s: BattleState, ui: UiState): string {
   if (s.pendingLevelUps <= 0 || s.status === 'lost' || ui.isEnemyTurnAnimating) return '';
   const step = ui.levelBonusStep ?? 'root';
-  const remNote = s.pendingLevelUps > 1 ? `（残り ${s.pendingLevelUps} 回選択）` : '';
+  const remNote = s.pendingLevelUps > 1 ? `（残${s.pendingLevelUps}回）` : '';
 
   if (step === 'select_group') {
     const groupDefs: { group: TileGroup; samples: Kind[] }[] = [
@@ -290,8 +285,8 @@ function renderLevelUpModal(s: BattleState, ui: UiState): string {
         const cur = s.bonusTileAtk?.[group] ?? 0;
         const sampleHtml = samples.map((k) => tileHtml(k, '', 'mini')).join('');
         return `<button class="equip-card rarity-uncommon" data-level-group="${group}">
-          <div class="eq-rarity">現在の強化値: +${cur} → <b>+${cur + 2}</b></div>
-          <div class="eq-name">${esc(TILE_GROUP_LABEL[group])} の攻撃力+2</div>
+          <div class="eq-rarity">強化値: +${cur} → <b>+${cur + 2}</b></div>
+          <div class="eq-name">${esc(TILE_GROUP_LABEL[group])} 攻撃+2</div>
           <div class="yaku-example">${sampleHtml}</div>
         </button>`;
       })
@@ -300,10 +295,10 @@ function renderLevelUpModal(s: BattleState, ui: UiState): string {
     return `<div class="overlay">
       <div class="reward-modal levelup-modal">
         <div class="yaku-modal-head">
-          <h2>⚔️ 攻撃力+2にする牌種を選択${remNote}</h2>
-          <button class="btn-clear btn-sm" data-action="level-bonus-back">← 戻る</button>
+          <h2>攻撃+2にする牌種を選択${remNote}</h2>
+          <button class="btn-clear btn-sm" data-action="level-bonus-back">戻る</button>
         </div>
-        <p class="reward-sub">選択した種類のすべての牌の基礎攻撃力が、この${MAX_STAGE}連戦の間永続的に +2 されます。</p>
+        <p class="reward-sub">選んだ牌種の基礎攻撃力が永続+2されます。</p>
         <div class="equip-choices">${cards}</div>
       </div>
     </div>`;
@@ -325,10 +320,10 @@ function renderLevelUpModal(s: BattleState, ui: UiState): string {
     return `<div class="overlay">
       <div class="wall-modal levelup-modal">
         <div class="yaku-modal-head">
-          <h2>🚫 永続的に残り牌0にする牌を選択${remNote}</h2>
-          <button class="btn-clear btn-sm" data-action="level-bonus-back">← 戻る</button>
+          <h2>残り牌を0にする牌を選択${remNote}</h2>
+          <button class="btn-clear btn-sm" data-action="level-bonus-back">戻る</button>
         </div>
-        <p class="reward-sub">クリックした牌の残り牌数が永続的に0になり、以降の補充や山リセットでも出現しなくなります。</p>
+        <p class="reward-sub">選んだ牌の残り牌数が永続0になります。</p>
         <div class="wall-grid">${wall}</div>
       </div>
     </div>`;
@@ -336,23 +331,23 @@ function renderLevelUpModal(s: BattleState, ui: UiState): string {
 
   return `<div class="overlay">
     <div class="reward-modal levelup-modal">
-      <h2>🎉 レベルアップ！（Lv.${s.player.level}）能力アップを選択${remNote}</h2>
-      <p class="reward-sub">以下の3つのボーナスから1つを選んで能力を強化してください。</p>
+      <h2>Lv.${s.player.level} 能力アップ選択${remNote}</h2>
+      <p class="reward-sub">強化ボーナスを1つ選択してください。</p>
       <div class="equip-choices">
         <button class="equip-card rarity-uncommon" data-action="level-bonus-hp">
           <div class="eq-rarity">耐久強化</div>
-          <div class="eq-name">❤️ 最大HP＋20</div>
-          <div class="eq-desc">最大HPと現在HPを +20 増加させる（現在 ${s.player.maxHp} → ${s.player.maxHp + 20}）</div>
+          <div class="eq-name">最大HP＋20</div>
+          <div class="eq-desc">最大HPと現在HPを+20（${s.player.maxHp} → ${s.player.maxHp + 20}）</div>
         </button>
         <button class="equip-card rarity-rare" data-action="level-bonus-group-menu">
-          <div class="eq-rarity">火力強化（牌種選択へ）</div>
-          <div class="eq-name">⚔️ 特定牌種の攻撃力＋2</div>
-          <div class="eq-desc">［萬子・筒子・索子・風牌・三元牌］のうち1種類を選び、基礎攻撃力を永続的に+2する</div>
+          <div class="eq-rarity">火力強化</div>
+          <div class="eq-name">特定牌種の攻撃＋2</div>
+          <div class="eq-desc">1種類の牌の基礎攻撃力を永続+2</div>
         </button>
         <button class="equip-card rarity-legend" data-action="level-bonus-kind-menu">
-          <div class="eq-rarity">山圧縮（牌選択へ）</div>
-          <div class="eq-name">🚫 残り牌1つを永続的に0に</div>
-          <div class="eq-desc">全34種の中から1つを選び、その牌の残り牌数を永続的に0枚にする</div>
+          <div class="eq-rarity">山圧縮</div>
+          <div class="eq-name">残り牌1種を永続0に</div>
+          <div class="eq-desc">選んだ牌1種の残り牌を永続0にする</div>
         </button>
       </div>
     </div>
@@ -367,7 +362,7 @@ function renderLogModal(s: BattleState): string {
   return `<div class="overlay" data-action="toggle-log">
     <div class="wall-modal log-modal" data-stop>
       <div class="yaku-modal-head">
-        <h2>📜 バトルログ履歴（${s.log.length}件）</h2>
+        <h2>ログ履歴（${s.log.length}件）</h2>
         <button class="btn-clear btn-sm" data-action="toggle-log">閉じる</button>
       </div>
       <ul class="log" id="log">${log}</ul>
@@ -389,8 +384,8 @@ function renderRewardModal(s: BattleState, ui: UiState): string {
     .join('');
   return `<div class="overlay">
     <div class="reward-modal">
-      <h2>ステージ ${s.stage} クリア！ 報酬装備を選択</h2>
-      <p class="reward-sub">未所持の装備から1つを選んで獲得し、手牌と状態を引き継いで第${s.stage + 1}戦へ進みます。</p>
+      <h2>ステージ ${s.stage} クリア！ 報酬選択</h2>
+      <p class="reward-sub">装備を1つ選んで第${s.stage + 1}戦へ進みます。</p>
       <div class="equip-choices">${cards}</div>
     </div>
   </div>`;
@@ -417,12 +412,12 @@ function renderWallModal(s: BattleState, ui: UiState): string {
   return `<div class="overlay" data-action="close-wall">
     <div class="wall-modal" data-stop>
       <div class="yaku-modal-head">
-        <h2>残り牌一覧（残り ${s.wall.length}枚${s.resets > 0 ? ` ／ 山補充${s.resets}回` : ''}）</h2>
+        <h2>残り牌（${s.wall.length}枚${s.resets > 0 ? `／補充${s.resets}回` : ''}）</h2>
         <button class="btn-clear btn-sm" data-action="close-wall">閉じる</button>
       </div>
       ${
         canSearchClick
-          ? '<div class="search-modal-banner">🔍 サーチ中：手牌と入れ替えたい牌をクリックしてください</div>'
+          ? '<div class="search-modal-banner">入れ替えたい牌をクリック</div>'
           : ''
       }
       <div class="wall-grid">${wall}</div>
@@ -550,7 +545,7 @@ export function renderBattle(v: BattleView): string {
   // 所持装備一覧
   const equipBadges =
     s.equipments.length === 0
-      ? '<span class="muted-note">なし（バトル勝利で獲得）</span>'
+      ? '<span class="muted-note">なし</span>'
       : s.equipments
           .map((id, idx) => {
             const eq = getEquipment(id);
@@ -640,29 +635,25 @@ export function renderBattle(v: BattleView): string {
     <section class="table">
       <div class="status-line">
         <span>ターン ${s.turn}</span>
-        <span class="${s.chain > 0 ? 'chain-active' : 'ready'}">Chain ${s.chain}（倍率 ×${chainMult}）</span>
+        <span class="${s.chain > 0 ? 'chain-active' : 'ready'}">Chain ${s.chain}（×${chainMult}）</span>
         ${
           s.extraChains > 0
-            ? `<span class="chain-stock">追加行動ストック: ${s.extraChains}</span>`
+            ? `<span class="chain-stock">ストック:${s.extraChains}</span>`
             : ''
         }
         ${
           riichiAutoRunning
-            ? `<span class="riichi-auto-indicator">🔄 リーチ中：右端の自摸牌をオート自摸切り中（${Math.min(
+            ? `<span class="riichi-auto-indicator">リーチ入替(${Math.min(
                 3,
                 s.riichiSwapsThisTurn + 1,
-              )}/3枚目）…</span>`
+              )}/3)</span>`
             : ''
         }
         <div class="buff-row">${renderBuffBadges(s)}</div>
         <div class="status-right">
-          <button class="btn-wall btn-xs" data-action="open-wall">🀄 残り牌（${s.wall.length}枚）</button>
-          <button class="btn-yaku btn-xs" data-action="open-yaku">📖 役・効果一覧</button>
+          <button class="btn-wall btn-xs" data-action="open-wall">残り牌(${s.wall.length})</button>
+          <button class="btn-yaku btn-xs" data-action="open-yaku">役一覧</button>
         </div>
-      </div>
-      <div class="hand-row">
-        <div class="hand">${hand}</div>
-        ${melds ? `<div class="melds">${melds}</div>` : ''}
       </div>
       <div class="preview${preview.ev?.valid || preview.canConfirmRiichi ? ' ok' : ''}">
         <div class="preview-main">${esc(ui.message ? `⚠️ ${ui.message}` : preview.text)}</div>
@@ -675,44 +666,42 @@ export function renderBattle(v: BattleView): string {
             : ui.riichiSelectMode
               ? `${
                   preview.canConfirmRiichi
-                    ? '<button class="btn-riichi" data-action="confirm-riichi">🔥 この牌を切ってリーチ確定！</button>'
+                    ? '<button class="btn-riichi" data-action="confirm-riichi">リーチ確定</button>'
                     : ''
                 }
                 <button class="btn-clear" data-action="cancel-riichi-select">戻る</button>`
               : `${
                   preview.canAttack
                     ? `<button class="btn-attack" data-action="attack">${
-                        s.healMode ? '💚 回復変換攻撃' : '⚔️ 攻撃（破棄＆補充）'
+                        s.healMode ? '回復攻撃' : '攻撃'
                       }</button>`
                     : ''
                 }
                 ${
                   preview.canGuard
-                    ? `<button class="btn-guard" data-action="guard">🛡️ ガード（軽減 -${(
-                        preview.guardAmount ?? 0
-                      ).toLocaleString()}）</button>`
+                    ? '<button class="btn-guard" data-action="guard">ガード</button>'
                     : ''
                 }
                 ${
                   preview.canCure
-                    ? '<button class="btn-cure" data-action="cure-debuff">💊 治療（デバフ解除）</button>'
+                    ? '<button class="btn-cure" data-action="cure-debuff">治療</button>'
                     : ''
                 }
                 ${
                   preview.canKan
-                    ? '<button class="btn-kan" data-action="kan">カン（4枚キープ）</button>'
+                    ? '<button class="btn-kan" data-action="kan">カン</button>'
                     : ''
                 }
                 ${
                   s.riichi
-                    ? '<button class="btn-cancel-riichi" data-action="cancel-riichi">🚫 リーチキャンセル（5T役封印）</button>'
+                    ? '<button class="btn-cancel-riichi" data-action="cancel-riichi">リーチ解除</button>'
                     : preview.canRiichi
-                      ? '<button class="btn-riichi" data-action="start-riichi-select">リーチ宣言（捨て牌選択）</button>'
+                      ? '<button class="btn-riichi" data-action="start-riichi-select">リーチ</button>'
                       : ''
                 }
                 ${
                   preview.canMulligan
-                    ? `<button class="btn-mulligan" data-action="mulligan">マリガン（残り${2 - s.mulligansUsed}回）</button>`
+                    ? '<button class="btn-mulligan" data-action="mulligan">マリガン</button>'
                     : ''
                 }
                 ${
@@ -730,32 +719,37 @@ export function renderBattle(v: BattleView): string {
       ${
         hasAnyUsableSkill
           ? `<div class="skill-actions">
-              <span class="skill-label">装備スキル：</span>
+              <span class="skill-label">スキル：</span>
               ${
                 canToggleHealNow
-                  ? `<button class="btn-skill ${s.healMode ? 'active' : ''}" data-action="toggle-heal">回復変換(${
+                  ? `<button class="btn-skill ${s.healMode ? 'active' : ''}" data-action="toggle-heal">回復変換:${
                       s.healMode ? 'ON' : 'OFF'
-                    })</button>`
+                    }</button>`
                   : ''
               }
               ${
                 canResetWallNow
-                  ? '<button class="btn-skill" data-action="skill-reset-wall">残り牌リセット</button>'
+                  ? '<button class="btn-skill" data-action="skill-reset-wall">山リセット</button>'
                   : ''
               }
               ${
                 canCopyNow
-                  ? '<button class="btn-skill" data-action="skill-copy" title="1枚目の選択牌を2枚目の選択牌と同じ牌に変化">複製を実行</button>'
+                  ? '<button class="btn-skill" data-action="skill-copy">複製</button>'
                   : ''
               }
               ${
                 canSearchNow
-                  ? `<button class="btn-skill ${ui.searchMode ? 'active' : ''}" data-action="skill-search" title="選択中の手牌を残り牌の任意の牌に変化">サーチを実行</button>`
+                  ? `<button class="btn-skill ${ui.searchMode ? 'active' : ''}" data-action="skill-search">サーチ</button>`
                   : ''
               }
             </div>`
           : ''
       }
+      <div class="hand-row${playerHit}">
+        <div class="hand">${hand}</div>
+        ${melds ? `<div class="melds">${melds}</div>` : ''}
+        ${playerFx}
+      </div>
     </section>
 
     <section class="player${playerHit}">
@@ -769,7 +763,6 @@ export function renderBattle(v: BattleView): string {
         <span class="equip-label">所持装備：</span>
         <div class="equip-list">${equipBadges}</div>
       </div>
-      ${playerFx}
     </section>
     ${renderLevelUpModal(s, ui)}
     ${renderRewardModal(s, ui)}
