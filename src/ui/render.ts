@@ -1,6 +1,7 @@
 import {
   BattleState,
   buildScoreContext,
+  calculateScore,
   countActiveEquip,
   getActiveEquips,
   hasAnyPlayerDebuff,
@@ -217,12 +218,11 @@ export function renderTitle(showYakuModal = false): string {
     <section class="rules">
       <ul>
         <li><b>全34種136枚</b>を使用。手牌は9枚。「打牌」はなく、<b>任意の枚数の牌を選んで「攻撃」</b>し、使った枚数だけ補充される。</li>
-        <li><b>牌の攻撃力とセットボーナス</b>：1・9・字牌は<b>10</b>、2〜8はその数字。セットが含まれるとボーナス加算（<b>同牌セット+20 ／ 並びセット+10 ／ ペア+5 ／ カン+30＆基礎攻撃+50%</b>）。</li>
-        <li><b>役とチェーン</b>：攻撃に「役」が含まれると固有の<b>効果</b>が発動し、<b>チェーン（連続攻撃）</b>が発生！チェーン中はダメージに <b>×(Chain数＋1)</b> の補正がかかる。</li>
-        <li><b>特殊牌</b>：<b>金牌</b>は1枚ごとに最終ダメージ<b>+50%</b>。<b>赤牌</b>は金牌効果＋攻撃使用で同じ種類の牌の基礎攻撃力<b>+5（永続）</b>。<b>虹牌</b>はセットに含めると最終ダメージ<b>2倍＆チェーン+2</b>。</li>
-        <li><b>ガード・治療</b>：攻撃する代わりに選んだ牌の基礎攻撃力分、次の被ダメージを軽減する<b>ガード</b>（役は不発）、攻撃を1ターン放棄してデバフを1つランダム解除する<b>治療</b>が使用可能。</li>
-        <li><b>カン・リーチ・マリガン</b>：同種4枚で<b>カン</b>（キープ＋金牌1枚補充、2セット役以上で使用可）。あと1枚で3セットが揃う時は捨て牌を1枚選んで<b>リーチ</b>宣言可（<b>リーチ中は被ダメージ半減</b>、右端の自摸牌をオート自摸切り、完成攻撃で<b>威力2倍＆チェーン＋補充牌30%金牌化</b>）。1ターン目に1・9・字牌が6枚以上なら<b>マリガン</b>（手牌総入れ替え・2回まで）可能。</li>
-        <li><b>${MAX_STAGE}連戦・成長・装備</b>：<b>与ダメージ</b>および<b>役成立ボーナス（1セット役 &lt; 2セット役 &lt; 3セット役 &lt; 役満相当役）</b>で経験値を獲得してレベルアップ（最大HP+10%・HP30%回復・能力アップ選択）。勝利ごとに3択の<b>ユニーク装備</b>を獲得し、手牌・持続効果・残り牌を次の戦いへ持ち越す！</li>
+        <li><b>牌の攻撃力とセット強化</b>：1・9・字牌は<b>10</b>、2〜8はその数字。セット数に応じて最終ダメージが<b>1セット1.5倍 ／ 2セット2倍 ／ 3セット3倍</b>（役とも複合）！さらに<b>“セットのみ”（役なし）</b>の時は、<b>同牌セットで基礎攻撃力+50%＆ペア補充</b>、<b>並びセットでHP10%回復＆2枚並び補充</b>が発動。</li>
+        <li><b>役とチェーン</b>：攻撃に「役」が含まれると固有の<b>効果</b>が発動し、<b>チェーン（連続攻撃）</b>が発生！<b>役満相当以外の役はすべて複合</b>し、<b>タンヤオも初期状態から使用可能</b>。</li>
+        <li><b>特殊牌と「銭」</b>：<b>金牌</b>（最終威力+50%）・<b>赤牌</b>（金牌効果＋同種牌の基礎攻撃+5永続）・<b>虹牌</b>（最終威力2倍＆チェーン+2）を攻撃に使うと即座に<b>銭</b>を獲得！敵撃破・役満ご祝儀・一部役や装備でも銭が貯まる。</li>
+        <li><b>カン・リーチ・マリガン</b>：同種4枚で<b>カン</b>（キープ＋金牌1枚補充、2セット役以上で使用可）。あと1枚で3セットが揃う時は捨て牌を1枚選んで<b>リーチ</b>宣言可（<b>被ダメージ半減</b>、<b>1ターン最大3枚まで自動入れ替え</b>、3セット完成で<b>「リーチ」役（威力2倍＆チェーン＋補充牌30%金牌化）</b>が成立！牌封印や手牌破壊を受けた場合はノーリスクで自動解除）。</li>
+        <li><b>${MAX_STAGE}連戦・成長・スコア</b>：与ダメージ＆役成立でレベルアップし、勝利ごとに<b>ユニーク装備</b>を獲得。ゲーム終了時には到達ステージ・レベル・成立役・所持装備から<b>最終スコア</b>とボーナス銭が算出される！</li>
       </ul>
     </section>
     <h2>ステージを選択して開始</h2>
@@ -561,17 +561,32 @@ export function renderBattle(v: BattleView): string {
           })
           .join('');
 
-  const result =
-    s.status === 'won' || s.status === 'lost'
-      ? `<div class="overlay"><div class="result ${s.status}">
+  const sc = s.status === 'won' || s.status === 'lost' ? calculateScore(s) : null;
+  const result = sc
+    ? `<div class="overlay"><div class="result ${s.status}">
           <h2>${s.status === 'won' ? `全${MAX_STAGE}連戦 制覇！！` : `第${s.stage}戦 敗北……`}</h2>
           <p>到達ステージ: ${s.stage} / ${MAX_STAGE} ｜ Lv.${s.player.level} ｜ 残りHP ${s.player.hp.toLocaleString()}</p>
+          <div class="score-breakdown">
+            <table>
+              <tbody>
+                <tr><th>勝ち抜きステージ（${sc.stagesCleared}戦${s.status === 'won' ? '＋全制覇' : ''}）</th><td>+${sc.stageScore.toLocaleString()} pt</td></tr>
+                <tr><th>到達レベル（Lv.${s.player.level}）</th><td>+${sc.levelScore.toLocaleString()} pt</td></tr>
+                <tr><th>成立させた役（計${sc.yakuCount}回）</th><td>+${sc.yakuScore.toLocaleString()} pt</td></tr>
+                <tr><th>所持装備（計${sc.equipCount}個）</th><td>+${sc.equipScore.toLocaleString()} pt</td></tr>
+                <tr class="score-total-row"><th>🏆 最終スコア</th><td>${sc.totalScore.toLocaleString()} pt</td></tr>
+              </tbody>
+            </table>
+            <div class="money-summary">
+              <span>スコアボーナス: <b>+${sc.bonusMoneyFromScore.toLocaleString()} 銭</b></span>
+              <span>💰 総獲得銭: <b>${s.money.toLocaleString()} 銭</b></span>
+            </div>
+          </div>
           <div class="result-actions">
             <button data-action="retry">第1戦から再挑戦</button>
             <button data-action="title">タイトルへ戻る</button>
           </div>
         </div></div>`
-      : '';
+    : '';
 
   const chainMult = (s.chain + 1) * (s.chain > 0 ? s.nextChainMult : 1);
   const riichiAutoRunning = s.riichi && !hasThreeSets(s.hand, s.melds) && s.status === 'playing';
@@ -633,7 +648,10 @@ export function renderBattle(v: BattleView): string {
         }
         ${
           riichiAutoRunning
-            ? '<span class="riichi-auto-indicator">🔄 リーチ中：右端の自摸牌をオート自摸切り中…</span>'
+            ? `<span class="riichi-auto-indicator">🔄 リーチ中：右端の自摸牌をオート自摸切り中（${Math.min(
+                3,
+                s.riichiSwapsThisTurn + 1,
+              )}/3枚目）…</span>`
             : ''
         }
         <div class="buff-row">${renderBuffBadges(s)}</div>
@@ -743,6 +761,7 @@ export function renderBattle(v: BattleView): string {
     <section class="player${playerHit}">
       <div class="player-head">
         <span>あなた（Lv.${s.player.level} ／ 攻撃補正 ×${(1 + s.player.level / 4).toFixed(2)}）</span>
+        <span class="money-badge">💰 ${s.money.toLocaleString()} 銭</span>
         ${expBar(s.player.exp, expForNextLevel(s.player.level))}
       </div>
       ${hpBar(s.player.hp, s.player.maxHp, 'player-hp')}

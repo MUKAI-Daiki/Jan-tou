@@ -61,14 +61,24 @@ export interface AttackEval {
   tilePower: number;
   /** セット・ペア・カンのボーナス合計 */
   setBonus: number;
-  /** カン含み補正後の基本攻撃力 */
+  /** カンおよび「セットのみ（役なし）同牌セット」補正後の基本攻撃力 */
   baseAttack: number;
+  /** セット数による最終ダメージ倍率（0セット=1、1セット=1.5、2セット=2、3セット=3） */
+  setCountMult: number;
+  /** セットのみ（役なし）の並びセットによるHP回復率（1組につき0.1＝10%） */
+  basicShuntsuHealRate: number;
+  /** セットのみ（役なし）の同牌セットによるペア補充組数 */
+  basicDrawPairs: number;
+  /** セットのみ（役なし）の並びセットによる2枚並び補充組数 */
+  basicDrawSeq2: number;
   /** 金牌（＋赤牌）枚数 */
   goldCount: number;
   /** 赤牌枚数（攻撃に使用すると同種牌の基礎攻撃力+5［永続］） */
   redCount: number;
   /** セットに含まれた虹牌枚数 */
   rainbowCount: number;
+  /** 攻撃に使用した全牌中の虹牌枚数（銭獲得用） */
+  usedRainbowCount: number;
   /** 今回の攻撃で獲得する追加チェーン回数 */
   gainedChains: number;
   /** 役成立による獲得ボーナス経験値（倍率補正前） */
@@ -139,7 +149,15 @@ export function evaluateDecomposition(
   }
   const tanyaoUnlocked = Boolean(ctx.tanyaoUnlocked || countEquip(equips, 'unlock_tanyao') > 0);
 
-  const rawYaku = judgeDecompositionYaku(d, { unlockedWinds, tanyaoUnlocked });
+  const isRiichiComplete = Boolean(
+    ctx.riichi && d.sets.length === 3 && d.singles.length === 0 && d.pairs.length === 0,
+  );
+
+  const rawYaku = judgeDecompositionYaku(d, {
+    unlockedWinds,
+    tanyaoUnlocked,
+    isRiichiComplete,
+  });
   const yakuSealed = (ctx.sealYakuTurns ?? 0) > 0;
   const yaku = yakuSealed ? [] : rawYaku;
 
@@ -161,15 +179,33 @@ export function evaluateDecomposition(
   const rawAttack = Math.max(1, tilePower + setBonus + flatAtk - debuffAtk);
 
   const kanCount = d.sets.filter((m) => m.type === 'kantsu').length;
-  const baseAttack = rawAttack * (1 + 0.5 * kanCount);
+  const koutsuCount = d.sets.filter((m) => m.type === 'koutsu').length;
+  const shuntsuCount = d.sets.filter((m) => m.type === 'shuntsu').length;
+
+  // 「セットのみ（役なし）」の攻撃強化：
+  // - 同牌セット: 基礎攻撃力合計（諸々計算前）を1組につき+50%増加、補充でペアを引き込む
+  // - 並びセット: HP回復10%（1組につき10%）、補充で2枚並びを引き込む
+  const isSetsOnlyNoYaku = yaku.length === 0 && d.sets.length > 0;
+  const basicKoutsuBonusRate = isSetsOnlyNoYaku ? 0.5 * koutsuCount : 0;
+  const basicShuntsuHealRate = isSetsOnlyNoYaku ? 0.1 * shuntsuCount : 0;
+  const basicDrawPairs = isSetsOnlyNoYaku ? koutsuCount : 0;
+  const basicDrawSeq2 = isSetsOnlyNoYaku ? shuntsuCount : 0;
+
+  const baseAttack = rawAttack * (1 + 0.5 * kanCount + basicKoutsuBonusRate);
+
+  // セット数ボーナス（役とも複合）：1セット=1.5倍、2セット=2倍、3セット=3倍
+  const setCount = d.sets.length;
+  const setCountMult = setCount >= 3 ? 3 : setCount === 2 ? 2 : setCount === 1 ? 1.5 : 1;
 
   // 金牌・赤牌・虹牌の集計
   let goldCount = 0;
   let redCount = 0;
+  let usedRainbowCount = 0;
   for (const t of allTiles) {
     const mod = effectiveTileMod(t, ctx.tileMods, equips);
     if (mod === 'gold' || mod === 'red') goldCount++;
     if (mod === 'red') redCount++;
+    if (mod === 'rainbow') usedRainbowCount++;
   }
 
   // セットまたは四対子に含まれる虹牌の数
@@ -182,16 +218,13 @@ export function evaluateDecomposition(
     if (effectiveTileMod(t, ctx.tileMods, equips) === 'rainbow') rainbowCount++;
   }
 
-  const isRiichiComplete = Boolean(
-    ctx.riichi && d.sets.length === 3 && d.singles.length === 0 && d.pairs.length === 0,
-  );
-
   // ダメージ倍率計算
   const level = ctx.level ?? 0;
   const levelMult = 1 + level / 4;
   const yakuMult = yaku.reduce((acc, y) => acc * y.dmgMult, 1);
   const sanankouMult = (ctx.sanankouTurns ?? 0) > 0 ? 3 : 1;
-  const riichiMult = isRiichiComplete ? 2 : 1;
+  // リーチ完成時は「リーチ」役（dmgMult=2）としてyakuMultに含まれる。役封印中または役満時は重複させない
+  const riichiMult = 1;
   const chain = ctx.chain ?? 0;
   const chainExtraMult = chain > 0 ? (ctx.nextChainMult ?? 1) : 1;
   const chainMult = (chain + 1) * chainExtraMult;
@@ -204,6 +237,7 @@ export function evaluateDecomposition(
     Math.round(
       baseAttack *
         levelMult *
+        setCountMult *
         yakuMult *
         sanankouMult *
         riichiMult *
@@ -219,12 +253,12 @@ export function evaluateDecomposition(
   if (d.isFourPairs && !yakuSealed) {
     gainedChains += 4;
   } else if (yaku.length > 0) {
-    // 通常役は1回、風牌セットは1組につき2回
+    // 通常役（リーチ含む）は1回、風牌セットは1組につき2回
     const windChains = yaku.filter((y) => y.id.startsWith('wind_')).reduce((a, y) => a + y.chains, 0);
     const hasNormalYaku = yaku.some((y) => !y.id.startsWith('wind_'));
     gainedChains += windChains + (hasNormalYaku ? 1 : 0);
   }
-  if (isRiichiComplete && gainedChains === 0) {
+  if (isRiichiComplete && gainedChains === 0 && !yakuSealed) {
     gainedChains += 1;
   }
   if (rainbowCount > 0) {
@@ -244,9 +278,14 @@ export function evaluateDecomposition(
     tilePower,
     setBonus,
     baseAttack,
+    setCountMult,
+    basicShuntsuHealRate,
+    basicDrawPairs,
+    basicDrawSeq2,
     goldCount,
     redCount,
     rainbowCount,
+    usedRainbowCount,
     gainedChains,
     yakuExp,
     isRiichiComplete,
@@ -267,10 +306,10 @@ export function evaluateDecomposition(
     }
   }
 
-  // キープしたカンの制約：「2セット役以上」にしか使えない
+  // キープしたカンの制約：「2セット役以上」（または3セット揃えるリーチ完成）にしか使えない
   const hasDeclaredKan = d.sets.some((m) => m.declared);
   if (hasDeclaredKan) {
-    const hasTwoOrMoreSetYaku = rawYaku.some((y) => y.tier === 2 || y.tier === 3);
+    const hasTwoOrMoreSetYaku = rawYaku.some((y) => y.tier === 2 || y.tier === 3 || y.id === 'riichi');
     if (d.sets.length < 2 || !hasTwoOrMoreSetYaku) {
       return {
         ...baseEval,

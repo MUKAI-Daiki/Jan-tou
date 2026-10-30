@@ -18,6 +18,14 @@ export const RARITY_LABEL: Record<Rarity, string> = {
   legend: 'レジェンド',
 };
 
+/** スコア計算用の装備レア度別ポイント（レア度が高いほど高得点） */
+export const RARITY_SCORE: Record<Rarity, number> = {
+  common: 200,
+  uncommon: 450,
+  rare: 900,
+  legend: 2000,
+};
+
 export const EQUIPMENTS: readonly EquipmentDef[] = [
   // ---- コモン ----
   { id: 'hp_up_10', name: '点棒の護符', rarity: 'common', desc: '最大HP+10%' },
@@ -33,7 +41,7 @@ export const EQUIPMENTS: readonly EquipmentDef[] = [
     id: 'red_five_1',
     name: '赤五の宝珠',
     rarity: 'uncommon',
-    desc: '5の牌が各1つずつ赤牌になる（金牌効果＋攻撃使用で同じ種類の牌の基礎攻撃力+5［永続］）',
+    desc: '5の牌が各1つずつ赤牌になる（金牌効果＋攻撃使用で同種牌の基礎攻撃力+5［永続］＆25銭獲得）',
   },
   { id: 'wind_east', name: '東風の紋章', rarity: 'uncommon', desc: '「東」の同牌セットが役になり、チェーン+2', windKind: 27 },
   { id: 'wind_south', name: '南風の紋章', rarity: 'uncommon', desc: '「南」の同牌セットが役になり、チェーン+2', windKind: 28 },
@@ -41,9 +49,9 @@ export const EQUIPMENTS: readonly EquipmentDef[] = [
   { id: 'wind_north', name: '北風の紋章', rarity: 'uncommon', desc: '「北」の同牌セットが役になり、チェーン+2', windKind: 30 },
   {
     id: 'unlock_tanyao',
-    name: '断么の教本',
+    name: '招財の算盤',
     rarity: 'uncommon',
-    desc: '役「タンヤオ（2セット以上すべて2〜8の数牌：ダメージ1.5倍・チェーン+1）」を解禁',
+    desc: '攻撃で役が成立するたび、1役につき +30 銭を獲得する',
   },
   {
     id: 'unlock_heal',

@@ -1,4 +1,4 @@
-import { EQUIPMENTS, Rarity, getEquipment } from '../data/equipments';
+import { EQUIPMENTS, RARITY_SCORE, Rarity, getEquipment } from '../data/equipments';
 import { MAX_STAGE, MONSTERS, MonsterDef, PLAYER_INITIAL_HP, expForNextLevel } from '../data/monsters';
 import { Mentsu, canDeclareRiichi, canMulliganHand, findRiichiDiscards, hasThreeSets } from './mentsu';
 import { chooseMonsterSkill, rollMonsterDamage } from './monster';
@@ -23,9 +23,11 @@ import {
   kindName,
   kindOf,
   makeTileId,
+  numOf,
   suitName,
   suitOf,
 } from './tile';
+import { Yaku, calcYakuScore, isYakumanYaku } from './yaku';
 
 /** 基本手牌枚数（3セット＝9枚分。カン1つにつき手牌枠は-3枚） */
 export const HAND_SIZE = 9;
@@ -104,6 +106,12 @@ export interface BattleState {
   bonusTileAtk: Record<TileGroup, number>;
   /** 未選択のレベルアップボーナス回数 */
   pendingLevelUps: number;
+  /** 所持している「銭」 */
+  money: number;
+  /** ゲーム終了時のスコアから獲得したボーナス銭 */
+  scoreBonusMoney: number;
+  /** このランで成立させた役の履歴（スコア計算用） */
+  yakuHistory: Yaku[];
   player: {
     hp: number;
     maxHp: number;
@@ -128,6 +136,8 @@ export interface BattleState {
   nextChainMult: number;
   /** リーチ宣言中かどうか */
   riichi: boolean;
+  /** リーチ中にこのターン入れ替えた枚数（1ターン最大3枚まで入れ替え可能） */
+  riichiSwapsThisTurn: number;
   /** このバトルで使用したマリガン回数（最大2回） */
   mulligansUsed: number;
   /** このバトルで発動した敗北回避回数 */
@@ -145,6 +155,57 @@ export interface BattleState {
   status: 'playing' | 'reward' | 'won' | 'lost';
   log: LogEntry[];
   events: BattleEvent[];
+}
+
+export interface ScoreBreakdown {
+  stagesCleared: number;
+  stageScore: number;
+  level: number;
+  levelScore: number;
+  yakuCount: number;
+  yakuScore: number;
+  equipCount: number;
+  equipScore: number;
+  totalScore: number;
+  bonusMoneyFromScore: number;
+}
+
+export function calculateScore(s: BattleState): ScoreBreakdown {
+  const stagesCleared = s.status === 'won' ? MAX_STAGE : Math.max(0, s.stage - 1);
+  const stageScore = stagesCleared * 1000 + (s.status === 'won' ? 3000 : 0);
+  const level = s.player.level;
+  const levelScore = level * 300;
+  const yakuHistory = s.yakuHistory ?? [];
+  const yakuCount = yakuHistory.length;
+  const yakuScore = yakuHistory.reduce((sum, y) => sum + calcYakuScore(y), 0);
+  const equipCount = s.equipments.length;
+  const equipScore = s.equipments.reduce((sum, id) => {
+    const eq = getEquipment(id);
+    return sum + (RARITY_SCORE[eq.rarity] ?? 200);
+  }, 0);
+  const totalScore = stageScore + levelScore + yakuScore + equipScore;
+  const bonusMoneyFromScore = Math.max(10, Math.floor(totalScore / 20));
+  return {
+    stagesCleared,
+    stageScore,
+    level,
+    levelScore,
+    yakuCount,
+    yakuScore,
+    equipCount,
+    equipScore,
+    totalScore,
+    bonusMoneyFromScore,
+  };
+}
+
+function gainMoney(s: BattleState, amount: number, reason: string): void {
+  if (amount <= 0) return;
+  s.money = (s.money ?? 0) + amount;
+  s.log.push({
+    side: 'system',
+    text: `💰【${reason}】+${amount.toLocaleString()} 銭を獲得！（所持銭: ${s.money.toLocaleString()} 銭）`,
+  });
 }
 
 export type LevelUpBonusChoice =
@@ -502,7 +563,7 @@ function rollRandomEquipments(
   const minIdx = order.indexOf(minRarity);
   const maxIdx = maxRarity ? order.indexOf(maxRarity) : order.length - 1;
   const owned = new Set(s.equipments);
-  const canLegend = forceAllowLegend || s.stage >= 7 || minRarity === 'legend';
+  const canLegend = forceAllowLegend || s.stage >= 5 || minRarity === 'legend';
 
   let pool = EQUIPMENTS.filter(
     (e) =>
@@ -573,6 +634,9 @@ function checkPlayerDefeatOrRevive(s: BattleState): boolean {
   s.player.hp = 0;
   s.status = 'lost';
   s.log.push({ side: 'system', text: 'あなたは倒れた……' });
+  const sc = calculateScore(s);
+  s.scoreBonusMoney = sc.bonusMoneyFromScore;
+  gainMoney(s, sc.bonusMoneyFromScore, `最終スコア報酬（Score: ${sc.totalScore.toLocaleString()}）`);
   return true;
 }
 
@@ -595,6 +659,13 @@ function recordMonsterStep(
     events: [...s.events],
   });
   s.events = [];
+}
+
+function forceCancelRiichiNoPenalty(s: BattleState): string {
+  if (!s.riichi) return '';
+  s.riichi = false;
+  s.riichiSwapsThisTurn = 0;
+  return '（リーチがペナルティなしで強制解除された！）';
 }
 
 function executeSingleMonsterAction(
@@ -696,13 +767,14 @@ function executeSingleMonsterAction(
         const idx = rng.int(pool.length);
         const t = pool[idx];
         pool.splice(idx, 1);
-        s.sealedTiles[t] = 3;
+        s.sealedTiles[t] = 2;
       }
+      const riichiBreakNote = count > 0 ? forceCancelRiichiNoPenalty(s) : '';
       recordMonsterStep(
         s,
         steps,
         `${def.name}の「牌封印」！`,
-        `手牌のうち${count}枚が3ターン攻撃に使えなくなった！`,
+        `手牌のうち${count}枚が2ターン攻撃に使えなくなった！${riichiBreakNote}`,
       );
       break;
     }
@@ -789,11 +861,12 @@ function executeSingleMonsterAction(
       }
       s.drawn = [];
       drawN(s, rng, n, { ignoreEffects: true });
+      const riichiBreakNote = forceCancelRiichiNoPenalty(s);
       recordMonsterStep(
         s,
         steps,
         `${def.name}の「手牌破壊」！`,
-        `手牌${n}枚が消去され、素の残り牌${n}枚と入れ替わった！`,
+        `手牌${n}枚が消去され、素の残り牌${n}枚と入れ替わった！${riichiBreakNote}`,
       );
       break;
     }
@@ -802,11 +875,12 @@ function executeSingleMonsterAction(
         s.melds.pop();
         s.drawn = [];
         drawN(s, rng, 3, { ignoreEffects: true });
+        const riichiBreakNote = forceCancelRiichiNoPenalty(s);
         recordMonsterStep(
           s,
           steps,
           `${def.name}の「カン破壊」！`,
-          'キープしていたカンが破壊され、素の残り牌3枚になった！',
+          `キープしていたカンが破壊され、素の残り牌3枚になった！${riichiBreakNote}`,
         );
       } else {
         dealDamageToPlayer(rollMonsterDamage(def.atk, rng), 'カン破壊（不発→強撃）');
@@ -819,11 +893,12 @@ function executeSingleMonsterAction(
       s.sealedTiles = {};
       s.drawn = [];
       drawN(s, rng, targetCount, { ignoreEffects: true });
+      const riichiBreakNote = forceCancelRiichiNoPenalty(s);
       recordMonsterStep(
         s,
         steps,
         `${def.name}の「全破壊」！`,
-        '手牌がすべて消去され、素の残り牌が補充された！',
+        `手牌がすべて消去され、素の残り牌が補充された！${riichiBreakNote}`,
       );
       break;
     }
@@ -833,8 +908,13 @@ function executeSingleMonsterAction(
 function endPlayerTurnAndAdvance(s: BattleState, rng: Rng, steps: MonsterTurnStep[]): void {
   const dec = (v: number) => Math.max(0, v - 1);
 
-  // プレイヤーターン終了時に役封印の残りターンを1経過させる（敵が付与した1ターン封印が次の自分の1ターン持続するようにする）
+  // プレイヤーターン終了時に役封印・牌封印の残りターンを1経過させる（敵が付与した2ターン牌封印が次の自分の2ターン持続するようにする）
   s.buffs.sealYakuTurns = dec(s.buffs.sealYakuTurns);
+  for (const tStr of Object.keys(s.sealedTiles)) {
+    const t = Number(tStr);
+    s.sealedTiles[t]--;
+    if (s.sealedTiles[t] <= 0) delete s.sealedTiles[t];
+  }
 
   // 敵の行動
   executeSingleMonsterAction(s, rng, true, steps);
@@ -859,12 +939,6 @@ function endPlayerTurnAndAdvance(s: BattleState, rng: Rng, steps: MonsterTurnSte
   s.cooldowns.copy = dec(s.cooldowns.copy);
   s.cooldowns.search = dec(s.cooldowns.search);
 
-  for (const tStr of Object.keys(s.sealedTiles)) {
-    const t = Number(tStr);
-    s.sealedTiles[t]--;
-    if (s.sealedTiles[t] <= 0) delete s.sealedTiles[t];
-  }
-
   // 毎ターン回復（平和バフ10% ＋ 装備「再生の牌皿」5%×所持数）
   const regenEquipCount = countActiveEquip(s, 'regen_5');
   const pinfuRate = s.buffs.pinfuTurns > 0 ? 0.1 : 0;
@@ -879,15 +953,21 @@ function endPlayerTurnAndAdvance(s: BattleState, rng: Rng, steps: MonsterTurnSte
   // 次ターン開始（鈍化中は装備によるチェーンプラスも封じる）
   s.turn++;
   s.chain = 0;
+  s.riichiSwapsThisTurn = 0;
   s.extraChains = s.buffs.slowTurns > 0 ? 0 : countActiveEquip(s, 'always_chain_1');
   s.nextChainMult = 1;
 }
 
 function handleMonsterDefeated(s: BattleState, rng: Rng): void {
   s.log.push({ side: 'system', text: `${s.monster.def.name}を倒した！` });
+  const killMoney = s.stage * 50;
+  gainMoney(s, killMoney, '敵撃破報酬');
   if (s.stage >= MAX_STAGE) {
     s.status = 'won';
     s.log.push({ side: 'system', text: `全${MAX_STAGE}連戦を制覇した！完全勝利！！` });
+    const sc = calculateScore(s);
+    s.scoreBonusMoney = sc.bonusMoneyFromScore;
+    gainMoney(s, sc.bonusMoneyFromScore, `最終スコア報酬（Score: ${sc.totalScore.toLocaleString()}）`);
   } else {
     s.status = 'reward';
     const maxRarity: Rarity | undefined = s.monster.def.commonOnlyReward ? 'common' : undefined;
@@ -917,6 +997,9 @@ export function newBattle(defOrSeed?: MonsterDef | number, maybeSeed?: number): 
     banishedKinds: [],
     bonusTileAtk: { m: 0, p: 0, s: 0, wind: 0, dragon: 0 },
     pendingLevelUps: 0,
+    money: 0,
+    scoreBonusMoney: 0,
+    yakuHistory: [],
     player: {
       hp: PLAYER_INITIAL_HP,
       maxHp: PLAYER_INITIAL_HP,
@@ -935,6 +1018,7 @@ export function newBattle(defOrSeed?: MonsterDef | number, maybeSeed?: number): 
     extraChains: 0,
     nextChainMult: 1,
     riichi: false,
+    riichiSwapsThisTurn: 0,
     mulligansUsed: 0,
     revivedThisBattle: 0,
     healMode: false,
@@ -1027,6 +1111,7 @@ export function step(prev: BattleState, action: Action): StepResult {
     s.extraChains = s.buffs.slowTurns > 0 ? 0 : countActiveEquip(s, 'always_chain_1');
     s.nextChainMult = 1;
     s.riichi = false;
+    s.riichiSwapsThisTurn = 0;
     s.mulligansUsed = 0;
     s.revivedThisBattle = 0;
     s.healMode = false;
@@ -1066,38 +1151,32 @@ export function step(prev: BattleState, action: Action): StepResult {
         if (action.discardTile === undefined || !discards.includes(action.discardTile)) {
           return fail('リーチ宣言で捨てる牌（聴牌になる牌）を1枚選んでください');
         }
-        // 選んだ捨て牌1枚を切ってリーチ宣言＆攻撃処理に移行
-        const prevLogLen = s.log.length;
+        // 選んだ捨て牌1枚を切ってリーチ宣言（1ターン最大3枚入れ替えの1枚目として処理）
         s.riichi = true;
+        s.riichiSwapsThisTurn = 1;
         const discardName = kindName(kindOf(action.discardTile));
-        s.log.push({
-          side: 'player',
-          text: `${discardName} を切ってリーチ宣言！（被ダメージ半減） 3セットが揃うまで自動で自摸切りを進めます！`,
-        });
-        // 切った牌を除外して1枚補充（その補充牌が s.drawn[0] になり、敵も行動する）
         const dIdx = s.hand.indexOf(action.discardTile);
         if (dIdx >= 0) s.hand.splice(dIdx, 1);
         delete s.sealedTiles[action.discardTile];
         s.drawn = [];
         drawOne(s, rng);
-        const afterPlayerState = structuredClone(s);
-        const playerEvents = [...s.events];
-        const playerLogs = s.log.slice(prevLogLen);
-        s.events = [];
-        const monsterTurnSteps: MonsterTurnStep[] = [];
-        endPlayerTurnAndAdvance(s, rng, monsterTurnSteps);
+        const completedNow = hasThreeSets(s.hand, s.melds);
+        s.log.push({
+          side: 'player',
+          text: completedNow
+            ? `${discardName} を切ってリーチ宣言！（1/3枚目） いきなり3セットが揃いました！`
+            : `${discardName} を切ってリーチ宣言！（被ダメージ半減 ／ 1/3枚目入れ替え） 1ターン最大3枚まで自動で自摸切りを進めます！`,
+        });
         s.rng = rng.state;
-        return {
-          state: s,
-          afterPlayerState,
-          playerEvents,
-          playerLogs,
-          monsterTurnSteps,
-        };
+        return { state: s };
       }
 
       s.riichi = true;
-      s.log.push({ side: 'player', text: 'リーチ宣言！（被ダメージ半減） 3セットが揃うまで自動で自摸切りを進めます！' });
+      s.riichiSwapsThisTurn = 0;
+      s.log.push({
+        side: 'player',
+        text: 'リーチ宣言！（被ダメージ半減） 1ターン最大3枚まで自動で自摸切りを進めます！',
+      });
       s.rng = rng.state;
       return { state: s };
     }
@@ -1105,6 +1184,7 @@ export function step(prev: BattleState, action: Action): StepResult {
     case 'cancel_riichi': {
       if (!s.riichi) return fail('現在はリーチ中ではありません');
       s.riichi = false;
+      s.riichiSwapsThisTurn = 0;
       s.buffs.sealYakuTurns = Math.max(s.buffs.sealYakuTurns, 5);
       s.log.push({
         side: 'player',
@@ -1340,14 +1420,22 @@ export function step(prev: BattleState, action: Action): StepResult {
       const prevLogLen = s.log.length;
       const yakuIds = new Set(ev.yaku.map((y) => y.id));
 
+      // リーチ中の1枚ツモ切りかどうか
+      const isRiichiTsumogiri = s.riichi && !ev.isRiichiComplete;
+
       // 三槓子：このバトルの経験値30倍（ダメージ経験値が入る前に適用）
       if (yakuIds.has('sankantsu')) {
         s.expMult = 30;
       }
 
+      // 成立した役をスコア履歴に記録
+      if (ev.yaku.length > 0) {
+        s.yakuHistory.push(...ev.yaku);
+      }
+
       const yakuText = ev.yaku.length > 0 ? ev.yaku.map((y) => y.name).join('・') : '役なし';
       const chainLabel = s.chain > 0 ? ` [${s.chain} Chain]` : '';
-      const riichiLabel = ev.isRiichiComplete ? ' [リーチ完成×2・補充30%金化]' : '';
+      const setMultLabel = ev.setCountMult > 1 ? ` [${ev.decomp.sets.length}セット×${ev.setCountMult}]` : '';
 
       // 回復変換モード判定
       if (s.healMode) {
@@ -1357,14 +1445,14 @@ export function step(prev: BattleState, action: Action): StepResult {
         s.events.push({ type: 'heal', target: 'player', amount: healAmount });
         s.log.push({
           side: 'player',
-          text: `回復変換！${chainLabel} ${yakuText} → HPを ${healAmount.toLocaleString()} 回復した！`,
+          text: `回復変換！${chainLabel}${setMultLabel} ${yakuText} → HPを ${healAmount.toLocaleString()} 回復した！`,
         });
       } else {
         s.monster.hp = Math.max(0, s.monster.hp - ev.damage);
         s.events.push({ type: 'damage', target: 'monster', amount: ev.damage });
         s.log.push({
           side: 'player',
-          text: `攻撃！${chainLabel}${riichiLabel} ${yakuText} → ${ev.damage.toLocaleString()} ダメージ`,
+          text: `攻撃！${chainLabel}${setMultLabel} ${yakuText} → ${ev.damage.toLocaleString()} ダメージ`,
         });
         gainExp(s, ev.damage);
 
@@ -1393,7 +1481,32 @@ export function step(prev: BattleState, action: Action): StepResult {
         }
       }
 
-      // 役成立ボーナス経験値（1セット役 < 2セット役 < 3セット役 < 役満相当役）
+      // 「セットのみ（役なし）」の強化効果：同牌セット・並びセット
+      if (ev.basicDrawPairs > 0) {
+        s.log.push({
+          side: 'system',
+          text: `【同牌セット効果】基礎攻撃力+${ev.basicDrawPairs * 50}% ＆ 補充でペア（2枚組）を引き込む！`,
+        });
+      }
+      if (ev.basicShuntsuHealRate > 0) {
+        const shuntsuHeal = Math.max(1, Math.round(s.player.maxHp * ev.basicShuntsuHealRate));
+        s.player.hp = Math.min(s.player.maxHp, s.player.hp + shuntsuHeal);
+        s.events.push({ type: 'heal', target: 'player', amount: shuntsuHeal });
+        s.log.push({
+          side: 'system',
+          text: `【並びセット効果】HPが ${shuntsuHeal.toLocaleString()} 回復し、補充で2枚並びを引き込む！`,
+        });
+      }
+
+      // 金牌・赤牌・虹牌を攻撃使用した直後の銭獲得
+      const pureGoldCount = Math.max(0, ev.goldCount - ev.redCount);
+      const specialTileMoney =
+        pureGoldCount * 15 + ev.redCount * 25 + ev.usedRainbowCount * 50;
+      if (specialTileMoney > 0) {
+        gainMoney(s, specialTileMoney, '金/赤/虹牌使用');
+      }
+
+      // 役成立ボーナス経験値（1セット役・リーチ < 2セット役 < 3セット役 < 役満相当役）
       if (ev.yakuExp > 0) {
         const gainedYakuExp = Math.round(ev.yakuExp * s.expMult);
         s.log.push({
@@ -1401,6 +1514,12 @@ export function step(prev: BattleState, action: Action): StepResult {
           text: `【役成立ボーナス】${yakuText} により経験値 +${gainedYakuExp.toLocaleString()} を獲得！`,
         });
         gainExp(s, ev.yakuExp);
+      }
+
+      // 装備「招財の算盤（unlock_tanyao）」：役成立のたび1役につき+30銭
+      const abacusCount = countActiveEquip(s, 'unlock_tanyao');
+      if (abacusCount > 0 && ev.yaku.length > 0) {
+        gainMoney(s, 30 * ev.yaku.length * abacusCount, '招財の算盤');
       }
 
       // 赤牌を攻撃に使用した場合（役に含めなくてよい）、同じ種類の牌の基礎攻撃力+5（永続）
@@ -1430,6 +1549,9 @@ export function step(prev: BattleState, action: Action): StepResult {
       let chantaGold = false;
 
       for (const y of ev.yaku) {
+        if (isYakumanYaku(y.id)) {
+          gainMoney(s, 500, `${y.name}祝儀`);
+        }
         switch (y.id) {
           case 'haku':
             s.buffs.nullifyDamage = true;
@@ -1438,6 +1560,7 @@ export function step(prev: BattleState, action: Action): StepResult {
           case 'chun':
             forceGoldDrawCount += 3;
             s.log.push({ side: 'system', text: '【中セット効果】補充牌のうち3枚が金牌になる！' });
+            gainMoney(s, 30, '中セット効果');
             break;
           case 'iipeikou':
             drawThreePairs = true;
@@ -1458,6 +1581,7 @@ export function step(prev: BattleState, action: Action): StepResult {
           case 'chanta':
             chantaGold = true;
             s.log.push({ side: 'system', text: '【チャンタ効果】手牌と補充牌の1・9・字牌がすべて金牌になる！' });
+            gainMoney(s, 50, 'チャンタ効果');
             break;
           case 'honiisou':
             s.buffs.honiisouTurns = 5;
@@ -1477,6 +1601,7 @@ export function step(prev: BattleState, action: Action): StepResult {
               side: 'system',
               text: '【清老頭効果】5ターンの間、補充がすべて2〜8の数牌になり30%で金牌化！',
             });
+            gainMoney(s, 150, '清老頭効果');
             break;
           case 'chiniisou':
             s.buffs.chiniisouTurns = 5;
@@ -1514,6 +1639,7 @@ export function step(prev: BattleState, action: Action): StepResult {
       const riichiGold30 = ev.isRiichiComplete;
       if (ev.isRiichiComplete) {
         s.riichi = false;
+        s.riichiSwapsThisTurn = 0;
         s.log.push({ side: 'system', text: '【リーチ完成効果】今回の補充牌が30%の確率で金牌になる！' });
       }
 
@@ -1559,6 +1685,32 @@ export function step(prev: BattleState, action: Action): StepResult {
         needDraw -= 3;
       }
 
+      // セットのみ（役なし）の同牌セット効果：補充でペアを引き込む
+      if (ev.basicDrawPairs > 0 && needDraw >= 2) {
+        const pairsToDraw = Math.min(ev.basicDrawPairs, Math.floor(needDraw / 2));
+        const availKinds = ACTIVE_KINDS.filter((k) => !isKindBanished(s, k));
+        for (let p = 0; p < pairsToDraw && availKinds.length > 0; p++) {
+          const pk = availKinds[rng.int(availKinds.length)];
+          drawOne(s, rng, { forceKind: pk, forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
+          drawOne(s, rng, { forceKind: pk, forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
+          needDraw -= 2;
+        }
+      }
+
+      // セットのみ（役なし）の並びセット効果：補充で2枚並びを引き込む
+      if (ev.basicDrawSeq2 > 0 && needDraw >= 2) {
+        const seqsToDraw = Math.min(ev.basicDrawSeq2, Math.floor(needDraw / 2));
+        const seqStartKinds = ACTIVE_KINDS.filter(
+          (k) => !isHonor(k) && numOf(k) <= 8 && !isKindBanished(s, k) && !isKindBanished(s, k + 1),
+        );
+        for (let q = 0; q < seqsToDraw && seqStartKinds.length > 0; q++) {
+          const sk = seqStartKinds[rng.int(seqStartKinds.length)];
+          drawOne(s, rng, { forceKind: sk, forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
+          drawOne(s, rng, { forceKind: sk + 1, forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
+          needDraw -= 2;
+        }
+      }
+
       // 残りの通常補充
       while (needDraw > 0) {
         drawOne(s, rng, { forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
@@ -1592,6 +1744,28 @@ export function step(prev: BattleState, action: Action): StepResult {
         handleMonsterDefeated(s, rng);
         s.rng = rng.state;
         return { state: s, attack: ev };
+      }
+
+      // リーチ中の1ターン最大3枚入れ替え処理
+      if (isRiichiTsumogiri) {
+        s.riichiSwapsThisTurn = (s.riichiSwapsThisTurn ?? 0) + 1;
+        if (hasThreeSets(s.hand, s.melds)) {
+          s.log.push({
+            side: 'system',
+            text: `🎉 リーチツモ！（${s.riichiSwapsThisTurn}/3枚目） 3セットが揃いました！そのまま攻撃できます！`,
+          });
+          s.rng = rng.state;
+          return { state: s, attack: ev };
+        }
+        if (s.riichiSwapsThisTurn < 3) {
+          s.log.push({
+            side: 'system',
+            text: `🔄 リーチ自摸切り（${s.riichiSwapsThisTurn}/3枚目）：このターンあと${3 - s.riichiSwapsThisTurn}枚入れ替えます…`,
+          });
+          s.rng = rng.state;
+          return { state: s, attack: ev };
+        }
+        s.riichiSwapsThisTurn = 0;
       }
 
       // チェーン判定（鈍化中は装備効果も含めチェーン保持数は常に0）

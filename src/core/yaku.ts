@@ -15,6 +15,7 @@ import {
 } from './tile';
 
 export type YakuId =
+  | 'riichi'
   | 'haku'
   | 'hatsu'
   | 'chun'
@@ -43,7 +44,7 @@ export interface Yaku {
   id: YakuId;
   name: string;
   tier: 1 | 2 | 3 | 'special';
-  /** 即時ダメージ倍率（通常1、タンヤオ1.5、發2、上位3セット役10） */
+  /** 即時ダメージ倍率（通常1、タンヤオ1.5、發/リーチ2、役満相当10） */
   dmgMult: number;
   /** この役で発生するチェーン回数 */
   chains: number;
@@ -53,14 +54,18 @@ export interface Yaku {
   suit?: Suit;
 }
 
-const YAKUMAN_IDS: ReadonlySet<YakuId> = new Set([
+export const YAKUMAN_IDS: ReadonlySet<YakuId> = new Set([
   'daisangen',
   'ryuuiisou',
   'tsuuiisou',
   'sankantsu',
 ]);
 
-/** 役成立時の獲得経験値（1セット役 < 2セット役 < 3セット役 < 役満相当役） */
+export function isYakumanYaku(id: YakuId): boolean {
+  return YAKUMAN_IDS.has(id);
+}
+
+/** 役成立時の獲得経験値（1セット役・リーチ < 2セット役 < 3セット役 < 役満相当役） */
 export function calcYakuExpBonus(y: Yaku): number {
   if (YAKUMAN_IDS.has(y.id)) return 1200;
   if (y.tier === 3) return 500;
@@ -68,14 +73,28 @@ export function calcYakuExpBonus(y: Yaku): number {
   return 80;
 }
 
+/**
+ * スコア計算用の役ポイント
+ * （1セット役・リーチ ＜ 2セット役 ＜ 四対子 ＜ 3セット役（通常） ＜ 3セット役（役満相当））
+ */
+export function calcYakuScore(y: Yaku): number {
+  if (YAKUMAN_IDS.has(y.id)) return 5000;
+  if (y.tier === 3) return 1500;
+  if (y.id === 'four_pairs' || y.tier === 'special') return 800;
+  if (y.tier === 2) return 400;
+  return 150;
+}
+
 export interface JudgeContext {
   unlockedWinds?: ReadonlySet<Kind>;
   tanyaoUnlocked?: boolean;
+  /** リーチ中に3セットを完成させて攻撃したか */
+  isRiichiComplete?: boolean;
 }
 
 export interface YakuCatalogEntry {
   name: string;
-  scope: '1セット役' | '2セット役' | '3セット役（非複合）' | '特殊役' | '装備解禁役';
+  scope: '1セット役' | '2セット役' | '3セット役' | '3セット役（役満・非複合）' | '特殊役' | '装備解禁役';
   effect: string;
   desc: string;
   example: readonly (readonly Kind[])[];
@@ -102,12 +121,26 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
   {
     name: '中セット（中3枚）',
     scope: '1セット役',
-    effect: '補充牌3枚を金牌にする ＋ チェーン1',
+    effect: '補充牌3枚を金牌にする ＋ 30銭獲得 ＋ チェーン1',
     desc: '「中」の同牌セット（3枚）またはカンを含めて攻撃',
     example: [[33, 33, 33]],
   },
+  {
+    name: 'リーチ',
+    scope: '1セット役',
+    effect: 'ダメージ2倍 ＋ 補充牌30%金牌化 ＋ チェーン1',
+    desc: 'リーチ宣言後、3セットを揃えて攻撃すると役として成立（他の役とも複合）',
+    example: [[0, 1, 2], [12, 13, 14], [20, 21, 22]],
+  },
 
   // ---- 2セット役 ----
+  {
+    name: 'タンヤオ',
+    scope: '2セット役',
+    effect: 'ダメージ1.5倍 ＋ チェーン1',
+    desc: '2セット以上すべて2〜8の数牌で構成（装備なしで常時発動可能）',
+    example: [[1, 2, 3], [12, 12, 12]],
+  },
   {
     name: '一盃口（イーペーコー）',
     scope: '2セット役',
@@ -133,14 +166,14 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
     name: '二暗刻',
     scope: '2セット役',
     effect: '補充に同牌セット（3枚組）が含まれる ＋ チェーン1',
-    desc: '同牌セット（またはカン）を2組',
+    desc: '同牌セット（またはカン）を2組以上',
     example: [[1, 1, 1], [24, 24, 24]],
   },
   {
     name: 'チャンタ',
     scope: '2セット役',
-    effect: '手牌と補充牌の1・9・字牌が金牌になる ＋ チェーン1',
-    desc: '2セットすべてに1・9・字牌が含まれる組み合わせ',
+    effect: '手牌と補充牌の1・9・字牌が金牌化 ＋ 50銭獲得 ＋ チェーン1',
+    desc: '2セット以上すべてに1・9・字牌が含まれる組み合わせ',
     example: [[0, 1, 2], [27, 27, 27]],
   },
 
@@ -153,83 +186,78 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
     example: [[1, 1], [12, 12], [20, 20], [31, 31]],
   },
 
-  // ---- 3セット役（他の役とは複合しない） ----
+  // ---- 3セット役（他の役とも複合可能） ----
   {
     name: '混一色（ホンイツ）',
-    scope: '3セット役（非複合）',
+    scope: '3セット役',
     effect: '5ターンの間、字牌は金牌として補充される ＋ チェーン1',
-    desc: '3セットが1種類の数牌と字牌のみで構成',
+    desc: '3セットが1種類の数牌と字牌のみで構成（他の役とも複合可）',
     example: [[0, 1, 2], [4, 5, 6], [27, 27, 27]],
   },
   {
     name: '平和（ピンフ）',
-    scope: '3セット役（非複合）',
+    scope: '3セット役',
     effect: '5ターンの間、毎ターンHPが自動回復する ＋ チェーン1',
-    desc: '並びセット（連続する数牌3枚）3組で成立',
+    desc: '並びセット（連続する数牌3枚）3組で成立（他の役とも複合可）',
     example: [[0, 1, 2], [12, 13, 14], [20, 21, 22]],
   },
   {
     name: '三暗刻（サンアンコー）',
-    scope: '3セット役（非複合）',
+    scope: '3セット役',
     effect: '5ターンの間、ダメージが3倍になる ＋ チェーン1',
-    desc: '同牌セット（またはカン）3組で成立',
+    desc: '同牌セット（またはカン）3組で成立（他の役とも複合可）',
     example: [[1, 1, 1], [13, 13, 13], [25, 25, 25]],
   },
   {
     name: '清老頭（チンロートー）',
-    scope: '3セット役（非複合）',
-    effect: '5ターンの間、補充がすべて2〜8の数牌になり30%で金牌化 ＋ チェーン1',
-    desc: '3セットすべてが1・9の数牌のみで構成',
+    scope: '3セット役',
+    effect: '5ターンの間、補充がすべて2〜8の数牌＆30%金牌化 ＋ 150銭獲得 ＋ チェーン1',
+    desc: '3セットすべてが1・9の数牌のみで構成（他の役とも複合可）',
     example: [[0, 0, 0], [8, 8, 8], [17, 17, 17]],
   },
   {
     name: '清一色（チンイツ）',
-    scope: '3セット役（非複合）',
+    scope: '3セット役',
     effect: '5ターンの間、残り牌外から成立した種類の数牌が補充される ＋ チェーン1',
-    desc: '3セットすべてが同じ種類の数牌（萬子 / 筒子 / 索子）のみで構成',
+    desc: '3セットすべてが同じ種類の数牌（萬子 / 筒子 / 索子）のみで構成（他の役とも複合可）',
     example: [[9, 10, 11], [12, 13, 14], [16, 16, 16]],
   },
+
+  // ---- 3セット役（役満相当・非複合） ----
   {
     name: '大三元（ダイサンゲン）',
-    scope: '3セット役（非複合）',
-    effect: 'ダメージ10倍 ＋ アンコモン以上の装備を3つランダム獲得 ＋ チェーン1',
+    scope: '3セット役（役満・非複合）',
+    effect: 'ダメージ10倍 ＋ アンコモン以上の装備3つ獲得 ＋ 祝儀500銭 ＋ チェーン1',
     desc: '白・發・中の同牌セット（またはカン）3組',
     example: [[31, 31, 31], [32, 32, 32], [33, 33, 33]],
     highTier: true,
   },
   {
     name: '緑一色（リューイーソー）',
-    scope: '3セット役（非複合）',
-    effect: 'ダメージ10倍 ＋ 自分のHP全回復 ＋ チェーン1',
+    scope: '3セット役（役満・非複合）',
+    effect: 'ダメージ10倍 ＋ 自分のHP全回復 ＋ 祝儀500銭 ＋ チェーン1',
     desc: '索子の2・3・4・6・8と發のみで3セットを構成',
     example: [[19, 20, 21], [23, 23, 23], [32, 32, 32]],
     highTier: true,
   },
   {
     name: '字一色（ツーイーソー）',
-    scope: '3セット役（非複合）',
-    effect: 'ダメージ10倍 ＋ その場でレベルを3上げる ＋ チェーン1',
+    scope: '3セット役（役満・非複合）',
+    effect: 'ダメージ10倍 ＋ その場でレベル+3 ＋ 祝儀500銭 ＋ チェーン1',
     desc: '字牌（東南西北白發中）のみで3セットを構成',
     example: [[27, 27, 27], [28, 28, 28], [31, 31, 31]],
     highTier: true,
   },
   {
     name: '三槓子（サンカンツ）',
-    scope: '3セット役（非複合）',
-    effect: 'ダメージ10倍 ＋ レジェンド装備1つ獲得 ＋ このバトルの経験値30倍 ＋ チェーン1',
+    scope: '3セット役（役満・非複合）',
+    effect: 'ダメージ10倍 ＋ レジェンド装備1つ獲得 ＋ バトル経験値30倍 ＋ 祝儀500銭 ＋ チェーン1',
     desc: 'カン（4枚組）3セットで攻撃',
     example: [[1, 1, 1, 1], [13, 13, 13, 13], [25, 25, 25, 25]],
     highTier: true,
   },
 
   // ---- 装備解禁役 ----
-  {
-    name: 'タンヤオ（装備解禁）',
-    scope: '装備解禁役',
-    effect: 'ダメージ1.5倍 ＋ チェーン1',
-    desc: '装備「断么の教本」所持時、2セット以上すべて2〜8の数牌で成立',
-    example: [[1, 2, 3], [12, 12, 12]],
-  },
   {
     name: '風牌セット（装備解禁）',
     scope: '装備解禁役',
@@ -241,7 +269,8 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
 
 /**
  * 分解結果（Decomposition）に対して成立する役を判定する。
- * - 3セット役が成立した場合は他の役とは複合せず、最上位の3セット役1つのみを返す。
+ * - 役満相当の3セット役（大三元・緑一色・字一色・三槓子）が成立した場合は他の役とは複合せず単体で返す。
+ * - それ以外の役（通常3セット役・2セット役・1セット役・リーチ）はすべて複合する。
  */
 export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {}): Yaku[] {
   // 1. 四対子（ペア4組）
@@ -268,7 +297,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
   const allShuntsu = ms.every((m) => m.type === 'shuntsu');
   const allSets = sets.length === n;
 
-  // 2. 3セット役（他の役とは複合しない。上位の3セット役を優先）
+  // 2. 役満相当の3セット役（他の役とは複合しない）
   if (n === 3) {
     if (ms.every((m) => m.type === 'kantsu')) {
       return [
@@ -278,7 +307,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           tier: 3,
           dmgMult: 10,
           chains: 1,
-          effectText: 'ダメージ10倍・レジェンド装備1つ獲得・バトル経験値30倍',
+          effectText: 'ダメージ10倍・レジェンド装備1つ獲得・バトル経験値30倍・祝儀500銭',
         },
       ];
     }
@@ -290,7 +319,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           tier: 3,
           dmgMult: 10,
           chains: 1,
-          effectText: 'ダメージ10倍・アンコモン以上の装備3つ獲得',
+          effectText: 'ダメージ10倍・アンコモン以上の装備3つ獲得・祝儀500銭',
         },
       ];
     }
@@ -302,7 +331,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           tier: 3,
           dmgMult: 10,
           chains: 1,
-          effectText: 'ダメージ10倍・HP全回復',
+          effectText: 'ダメージ10倍・HP全回復・祝儀500銭',
         },
       ];
     }
@@ -314,79 +343,84 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           tier: 3,
           dmgMult: 10,
           chains: 1,
-          effectText: 'ダメージ10倍・その場でレベル+3',
+          effectText: 'ダメージ10倍・その場でレベル+3・祝儀500銭',
         },
       ];
     }
+  }
+
+  // 3. 複合可能な役（リーチ・通常3セット役・2セット役・1セット役）
+  const yaku: Yaku[] = [];
+
+  if (ctx.isRiichiComplete && n === 3) {
+    yaku.push({
+      id: 'riichi',
+      name: 'リーチ',
+      tier: 1,
+      dmgMult: 2,
+      chains: 1,
+      effectText: 'ダメージ2倍・補充牌30%金牌化',
+    });
+  }
+
+  // 通常3セット役（他の役とも複合する）
+  if (n === 3) {
     if (kinds.every(isTerminal)) {
-      return [
-        {
-          id: 'chinroutou',
-          name: '清老頭',
-          tier: 3,
-          dmgMult: 1,
-          chains: 1,
-          effectText: '5ターン補充がすべて2〜8の数牌＆30%で金牌化',
-        },
-      ];
+      yaku.push({
+        id: 'chinroutou',
+        name: '清老頭',
+        tier: 3,
+        dmgMult: 1,
+        chains: 1,
+        effectText: '5ターン補充が2〜8の数牌＆30%金牌化＋150銭',
+      });
     }
 
     const hasHonor = kinds.some(isHonor);
     const numberSuits = new Set(kinds.filter((k) => !isHonor(k)).map(suitOf));
     if (!hasHonor && numberSuits.size === 1) {
       const suit = [...numberSuits][0];
-      return [
-        {
-          id: 'chiniisou',
-          name: '清一色',
-          tier: 3,
-          dmgMult: 1,
-          chains: 1,
-          effectText: `5ターン残り牌外から${suitName(suit)}が補充される`,
-          suit,
-        },
-      ];
+      yaku.push({
+        id: 'chiniisou',
+        name: '清一色',
+        tier: 3,
+        dmgMult: 1,
+        chains: 1,
+        effectText: `5ターン残り牌外から${suitName(suit)}が補充される`,
+        suit,
+      });
     }
     if (allSets) {
-      return [
-        {
-          id: 'sanankou',
-          name: '三暗刻',
-          tier: 3,
-          dmgMult: 1,
-          chains: 1,
-          effectText: '5ターンダメージ3倍',
-        },
-      ];
+      yaku.push({
+        id: 'sanankou',
+        name: '三暗刻',
+        tier: 3,
+        dmgMult: 1,
+        chains: 1,
+        effectText: '5ターンダメージ3倍',
+      });
     }
     if (hasHonor && numberSuits.size === 1) {
-      return [
-        {
-          id: 'honiisou',
-          name: '混一色',
-          tier: 3,
-          dmgMult: 1,
-          chains: 1,
-          effectText: '5ターン字牌が金牌として補充される',
-        },
-      ];
+      yaku.push({
+        id: 'honiisou',
+        name: '混一色',
+        tier: 3,
+        dmgMult: 1,
+        chains: 1,
+        effectText: '5ターン字牌が金牌として補充される',
+      });
     }
     if (allShuntsu) {
-      return [
-        {
-          id: 'pinfu',
-          name: '平和',
-          tier: 3,
-          dmgMult: 1,
-          chains: 1,
-          effectText: '5ターンHP自動回復',
-        },
-      ];
+      yaku.push({
+        id: 'pinfu',
+        name: '平和',
+        tier: 3,
+        dmgMult: 1,
+        chains: 1,
+        effectText: '5ターンHP自動回復',
+      });
     }
   }
-
-  // 3. 2セット役・1セット役（複合可能）
-  const yaku: Yaku[] = [];
 
   // 1セット役：三元牌
   for (const m of dragonSets) {
@@ -395,7 +429,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
     } else if (m.kind === 32) {
       yaku.push({ id: 'hatsu', name: '發セット', tier: 1, dmgMult: 2, chains: 1, effectText: 'ダメージ2倍' });
     } else if (m.kind === 33) {
-      yaku.push({ id: 'chun', name: '中セット', tier: 1, dmgMult: 1, chains: 1, effectText: '補充牌3枚を金牌化' });
+      yaku.push({ id: 'chun', name: '中セット', tier: 1, dmgMult: 1, chains: 1, effectText: '補充牌3枚を金牌化＋30銭' });
     }
   }
 
@@ -478,11 +512,12 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 2,
         dmgMult: 1,
         chains: 1,
-        effectText: '手牌と補充牌の1・9・字牌が金牌化',
+        effectText: '手牌と補充牌の1・9・字牌が金牌化＋50銭',
       });
     }
 
-    if (ctx.tanyaoUnlocked && kinds.every(isSimple)) {
+    // タンヤオは装備なしでも常時発動可能
+    if (kinds.every(isSimple)) {
       yaku.push({
         id: 'tanyao',
         name: 'タンヤオ',

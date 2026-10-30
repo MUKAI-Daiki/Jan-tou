@@ -826,6 +826,65 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   max-height: 60vh;
 }
 
+.money-badge {
+  background: rgba(242, 193, 78, 0.2);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: bold;
+}
+
+.score-breakdown {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 14px 18px;
+  margin: 14px auto;
+  max-width: 520px;
+  text-align: left;
+}
+.score-breakdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.score-breakdown th,
+.score-breakdown td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.score-breakdown th {
+  color: var(--muted);
+  font-weight: normal;
+  text-align: left;
+}
+.score-breakdown td {
+  text-align: right;
+  font-weight: bold;
+}
+.score-breakdown .score-total-row th,
+.score-breakdown .score-total-row td {
+  font-size: 18px;
+  color: var(--accent);
+  font-weight: bold;
+  border-top: 2px solid rgba(242, 193, 78, 0.45);
+  border-bottom: none;
+  padding-top: 10px;
+}
+.money-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.16);
+  font-size: 14px;
+  color: #fde047;
+}
+
 @media (max-width: 720px) {
   :root { --tile-w: 33px; --tile-h: 48px; }
   .battle {
