@@ -1,12 +1,13 @@
 import {
   BattleState,
+  SHOP_ATK_UP_COST,
+  SHOP_HP_UP_COST,
   buildScoreContext,
   calculateScore,
   countActiveEquip,
   getActiveEquips,
   getRiichiMaxSwaps,
   hasAnyPlayerDebuff,
-  isKindBanished,
   wallCounts,
 } from '../core/battle';
 import {
@@ -16,7 +17,13 @@ import {
   hasThreeSets,
   kanCandidates,
 } from '../core/mentsu';
-import { AttackEval, calcSingleTilePower, effectiveTileMod } from '../core/score';
+import {
+  AttackEval,
+  calcSingleTilePower,
+  effectiveTileMod,
+  findBestYakuCombo,
+  getYakuGuideHighlights,
+} from '../core/score';
 import {
   ACTIVE_KINDS,
   Kind,
@@ -41,7 +48,7 @@ import {
   getEquipmentSellPrice,
   getJobDef,
 } from '../data/equipments';
-import { MAX_STAGE, MONSTERS, expForNextLevel } from '../data/monsters';
+import { MAX_STAGE, MONSTERS } from '../data/monsters';
 
 export interface UiState {
   selectedJob: JobId;
@@ -72,10 +79,6 @@ export interface UiState {
   drawAnimActive?: boolean;
   /** 敵撃破時の点滅→ダークアウト演出中かどうか */
   isEnemyDefeatAnimating?: boolean;
-  /** レベルアップ時の発光＋「LV UP！」スライドイン演出中かどうか */
-  isLevelUpAnimating?: boolean;
-  /** レベルアップボーナス選択モーダルのサブ画面状態 */
-  levelBonusStep?: 'root' | 'select_group' | 'select_kind';
   message: string;
   showYakuModal?: boolean;
   showWallModal?: boolean;
@@ -108,13 +111,20 @@ export function tileHtml(
   kind: Kind,
   attrs = '',
   cls = '',
-  opts: { mod?: TileMod; power?: number; sealed?: number; isTsumo?: boolean } = {},
+  opts: {
+    mod?: TileMod;
+    power?: number;
+    sealed?: number;
+    isTsumo?: boolean;
+    yakuGuide?: boolean;
+  } = {},
 ): string {
   const f = tileFace(kind);
   const s = suitOf(kind);
   const honorCls = s === 'z' ? ` h${kind - 26}` : '';
   const modCls = opts.mod && opts.mod !== 'normal' ? ` mod-${opts.mod}` : '';
   const sealCls = opts.sealed && opts.sealed > 0 ? ' tile-sealed' : '';
+  const guideCls = opts.yakuGuide ? ' tile-yaku-guide' : '';
   const pwrBadge = opts.power !== undefined ? `<span class="pwr">${opts.power}</span>` : '';
   const modBadge =
     opts.mod === 'gold'
@@ -126,9 +136,10 @@ export function tileHtml(
           : '';
   const sealBadge =
     opts.sealed && opts.sealed > 0 ? `<span class="sbadge">封${opts.sealed}</span>` : '';
+  const guideBadge = opts.yakuGuide ? '<span class="yguide-badge">役</span>' : '';
 
-  return `<div class="tile s-${s}${honorCls}${modCls}${sealCls} ${cls}" ${attrs}>
-    ${modBadge}${sealBadge}
+  return `<div class="tile s-${s}${honorCls}${modCls}${sealCls}${guideCls} ${cls}" ${attrs}>
+    ${modBadge}${sealBadge}${guideBadge}
     <span class="t">${f.top}</span>${f.bottom ? `<span class="b">${f.bottom}</span>` : ''}
     ${pwrBadge}
   </div>`;
@@ -138,12 +149,6 @@ function hpBar(hp: number, max: number, cls: string): string {
   const pct = Math.max(0, Math.min(100, (hp / Math.max(1, max)) * 100));
   return `<div class="hpbar ${cls}"><div class="fill" style="width:${pct}%"></div>
     <span class="hptext">HP ${hp.toLocaleString()} / ${max.toLocaleString()}</span></div>`;
-}
-
-function expBar(exp: number, max: number): string {
-  const pct = Math.max(0, Math.min(100, (exp / Math.max(1, max)) * 100));
-  return `<div class="expbar"><div class="fill" style="width:${pct}%"></div>
-    <span class="exptext">EXP ${exp} / ${max}</span></div>`;
 }
 
 function renderExampleTiles(example: readonly (readonly Kind[])[]): string {
@@ -195,6 +200,7 @@ function renderYakuModal(state?: BattleState): string {
         <span class="y-scope">${esc(y.scope)}</span>
       </div>
       <div class="y-han">効果：${esc(y.effect)}</div>
+      <div class="y-perm">🌟 永続強化：${esc(y.permEffect)}</div>
       <div class="y-desc">条件：${esc(y.desc)}</div>
       ${renderExampleTiles(y.example)}
     </div>`,
@@ -244,12 +250,11 @@ export function renderTitle(showYakuModal = false, selectedJob: JobId = 'sword')
     </div>
     <section class="rules">
       <ul>
-        <li><b>基本ルール</b>：全34種136枚・手牌9枚。任意の枚数を選んで<b>攻撃</b>し、同数を補充する。</li>
-        <li><b>攻撃力とセット強化</b>：1・9・字牌は<b>10</b>、2〜8はその数字。セット数に応じ最終威力<b>1.5倍／2倍／3倍</b>。選んだ<b>職業</b>によって固有のセット効果や独自役が発動する。</li>
-        <li><b>役とチェーン</b>：役成立で固有効果＆<b>チェーン（連続攻撃）</b>発生。役満以外の役はすべて複合、タンヤオも常時発動可。継続バフ・デバフ重複時は残りターン数が加算される。</li>
-        <li><b>特殊牌と商店</b>：<b>金牌</b>（威力+50%）・<b>赤牌</b>（金効果＋同種攻撃+5永続）・<b>虹牌</b>（威力2倍＆チェーン+2）は<b>セット内に組み込むと発動</b>し<b>銭</b>も獲得。3試合ごとに<b>商店</b>で装備購入・売却・HP回復が可能。</li>
+        <li><b>基本ルール</b>：全34種136枚・手牌9枚。<b>役なし攻撃は3枚まで</b>、<b>役攻撃時は役に絡む牌のみ</b>選択可能。</li>
+        <li><b>役選択ガイド</b>：手牌で役が作れる牌には<b>「役」マーク</b>が表示され、クリックすると<b>役を構成する候補牌を自動選択</b>！</li>
+        <li><b>役成立の特権</b>：役成立で固有効果＆<b>チェーン（連続攻撃）</b>発生に加え、<b>多額の銭</b>と<b>役に合わせた永続ステータス強化</b>を獲得！</li>
+        <li><b>特殊牌と商店</b>：<b>金牌</b>（威力+50%）・<b>赤牌</b>（金効果＋同種攻撃+5永続）・<b>虹牌</b>（威力2倍＆チェーン+2）は<b>セット内に組み込むと発動</b>し<b>銭</b>も獲得。3試合ごとに<b>商店</b>で<b>ステータス永続強化・装備売買・HP回復</b>が可能。</li>
         <li><b>カン・リーチ</b>：同種4枚で<b>カン</b>（金牌1枚補充、2セット役以上で使用可）。あと1枚で3セット揃う時は<b>リーチ</b>可（毎ターン最大3枚入替［雀老師は4枚＆被ダメ半減］・完成で<b>リーチ役</b>成立）。</li>
-        <li><b>成長とスコア</b>：経験値でLvUP、勝利ごとに<b>ユニーク装備</b>を獲得。終了時に到達戦・Lv・成立役・装備から<b>最終スコア</b>を算出。</li>
       </ul>
     </section>
     <h2>2. ステージを選択して開始</h2>
@@ -278,7 +283,6 @@ function renderBuffBadges(s: BattleState): string {
   if (b.chiniisouTurns > 0 && b.chiniisouSuit) {
     badges.push(`<span class="badge buff">清一色:${suitName(b.chiniisouSuit)}(${b.chiniisouTurns}T)</span>`);
   }
-  if (s.expMult > 1) badges.push(`<span class="badge buff">EXP×${s.expMult}</span>`);
   const groups: TileGroup[] = ['m', 'p', 's', 'wind', 'dragon'];
   for (const g of groups) {
     const val = s.bonusTileAtk?.[g] ?? 0;
@@ -305,101 +309,6 @@ function renderEnemyBuffBadges(s: BattleState): string {
   return badges.join('');
 }
 
-function renderLevelUpModal(s: BattleState, ui: UiState): string {
-  if (
-    s.pendingLevelUps <= 0 ||
-    s.status === 'lost' ||
-    ui.isEnemyTurnAnimating ||
-    ui.isEnemyDefeatAnimating ||
-    ui.isLevelUpAnimating
-  ) {
-    return '';
-  }
-  const step = ui.levelBonusStep ?? 'root';
-  const remNote = s.pendingLevelUps > 1 ? `（残${s.pendingLevelUps}回）` : '';
-
-  if (step === 'select_group') {
-    const groupDefs: { group: TileGroup; samples: Kind[] }[] = [
-      { group: 'm', samples: [0, 4, 8] },
-      { group: 'p', samples: [9, 13, 17] },
-      { group: 's', samples: [18, 22, 26] },
-      { group: 'wind', samples: [27, 28, 29, 30] },
-      { group: 'dragon', samples: [31, 32, 33] },
-    ];
-    const cards = groupDefs
-      .map(({ group, samples }) => {
-        const cur = s.bonusTileAtk?.[group] ?? 0;
-        const sampleHtml = samples.map((k) => tileHtml(k, '', 'mini')).join('');
-        return `<button class="equip-card rarity-uncommon" data-level-group="${group}">
-          <div class="eq-rarity">強化値: +${cur} → <b>+${cur + 2}</b></div>
-          <div class="eq-name">${esc(TILE_GROUP_LABEL[group])} 攻撃+2</div>
-          <div class="yaku-example">${sampleHtml}</div>
-        </button>`;
-      })
-      .join('');
-
-    return `<div class="overlay">
-      <div class="reward-modal levelup-modal">
-        <div class="yaku-modal-head">
-          <h2>攻撃+2にする牌種を選択${remNote}</h2>
-          <button class="btn-clear btn-sm" data-action="level-bonus-back">戻る</button>
-        </div>
-        <p class="reward-sub">選んだ牌種の基礎攻撃力が永続+2されます。</p>
-        <div class="equip-choices">${cards}</div>
-      </div>
-    </div>`;
-  }
-
-  if (step === 'select_kind') {
-    const counts = wallCounts(s);
-    const wall = ACTIVE_KINDS.map((k) => {
-      const c = counts[k];
-      const banished = isKindBanished(s, k);
-      const attr = banished ? '' : `data-level-banish-kind="${k}"`;
-      const cls = banished ? ' empty banished-cell' : ' searchable';
-      return `<div class="wall-cell${cls}" ${attr}>
-        ${tileHtml(k, '', 'mini')}
-        <span class="cnt">${banished ? '封鎖済' : `残${c}→0`}</span>
-      </div>`;
-    }).join('');
-
-    return `<div class="overlay">
-      <div class="wall-modal levelup-modal">
-        <div class="yaku-modal-head">
-          <h2>残り牌を0にする牌を選択${remNote}</h2>
-          <button class="btn-clear btn-sm" data-action="level-bonus-back">戻る</button>
-        </div>
-        <p class="reward-sub">選んだ牌の残り牌数が永続0になります。</p>
-        <div class="wall-grid">${wall}</div>
-      </div>
-    </div>`;
-  }
-
-  return `<div class="overlay">
-    <div class="reward-modal levelup-modal">
-      <h2>Lv.${s.player.level} 能力アップ選択${remNote}</h2>
-      <p class="reward-sub">強化ボーナスを1つ選択してください。</p>
-      <div class="equip-choices">
-        <button class="equip-card rarity-uncommon" data-action="level-bonus-hp">
-          <div class="eq-rarity">耐久強化</div>
-          <div class="eq-name">最大HP＋100</div>
-          <div class="eq-desc">最大HPと現在HPを+100（${s.player.maxHp} → ${s.player.maxHp + 100}）</div>
-        </button>
-        <button class="equip-card rarity-rare" data-action="level-bonus-group-menu">
-          <div class="eq-rarity">火力強化</div>
-          <div class="eq-name">特定牌種の攻撃＋2</div>
-          <div class="eq-desc">1種類の牌の基礎攻撃力を永続+2</div>
-        </button>
-        <button class="equip-card rarity-legend" data-action="level-bonus-kind-menu">
-          <div class="eq-rarity">山圧縮</div>
-          <div class="eq-name">残り牌1種を永続0に</div>
-          <div class="eq-desc">選んだ牌1種の残り牌を永続0にする</div>
-        </button>
-      </div>
-    </div>
-  </div>`;
-}
-
 function renderLogModal(s: BattleState): string {
   const log = s.log
     .slice(-100)
@@ -419,10 +328,8 @@ function renderLogModal(s: BattleState): string {
 function renderRewardModal(s: BattleState, ui: UiState): string {
   if (
     s.status !== 'reward' ||
-    s.pendingLevelUps > 0 ||
     ui.isEnemyTurnAnimating ||
-    ui.isEnemyDefeatAnimating ||
-    ui.isLevelUpAnimating
+    ui.isEnemyDefeatAnimating
   ) {
     return '';
   }
@@ -452,16 +359,14 @@ function renderRewardModal(s: BattleState, ui: UiState): string {
 function renderShopModal(s: BattleState, ui: UiState): string {
   if (
     s.status !== 'shop' ||
-    s.pendingLevelUps > 0 ||
     ui.isEnemyTurnAnimating ||
-    ui.isEnemyDefeatAnimating ||
-    ui.isLevelUpAnimating
+    ui.isEnemyDefeatAnimating
   ) {
     return '';
   }
   const buyCards =
     s.shopItems.length === 0
-      ? '<p class="muted-note">購入可能な商品はすべて売り切れました。</p>'
+      ? '<p class="muted-note">購入可能な装備はすべて売り切れました。</p>'
       : s.shopItems
           .map((id) => {
             const eq = getEquipment(id);
@@ -476,6 +381,21 @@ function renderShopModal(s: BattleState, ui: UiState): string {
             </button>`;
           })
           .join('');
+
+  const canBuyHpUp = s.money >= SHOP_HP_UP_COST;
+  const groups: TileGroup[] = ['m', 'p', 's', 'wind', 'dragon'];
+  const atkUpgradeButtons = groups
+    .map((g) => {
+      const cur = s.bonusTileAtk?.[g] ?? 0;
+      const canBuyAtk = s.money >= SHOP_ATK_UP_COST;
+      return `<button class="shop-upgrade-btn${canBuyAtk ? '' : ' shop-disabled'}" data-shop-atk="${g}" ${
+        canBuyAtk ? '' : 'disabled'
+      }>
+        <span class="up-title">⚔️ ${esc(TILE_GROUP_LABEL[g])} 攻撃+2</span>
+        <span class="up-sub">現在 +${cur} → <b>+${cur + 2}</b> ｜ 💰 ${SHOP_ATK_UP_COST.toLocaleString()} 銭</span>
+      </button>`;
+    })
+    .join('');
 
   const healAmount = Math.max(1, Math.round(s.player.maxHp * 0.3));
   const canHeal = !s.shopHealUsed && s.money >= 1000 && s.player.hp < s.player.maxHp;
@@ -506,7 +426,7 @@ function renderShopModal(s: BattleState, ui: UiState): string {
       <div class="shop-header">
         <div>
           <h2>🏮 雀闘商店（第${s.stage}戦突破）</h2>
-          <p class="reward-sub">銭を使って装備の購入・売却やHP回復ができます。</p>
+          <p class="reward-sub">銭を使ってステータス永続強化・装備売買・HP回復ができます。</p>
         </div>
         <div class="shop-status">
           <span class="money-badge">💰 ${s.money.toLocaleString()} 銭</span>
@@ -517,7 +437,20 @@ function renderShopModal(s: BattleState, ui: UiState): string {
       ${ui.message ? `<div class="shop-msg">⚠️ ${esc(ui.message)}</div>` : ''}
 
       <div class="shop-section">
-        <div class="shop-sec-title">🛒 商品ラインナップ（クリックで購入）</div>
+        <div class="shop-sec-title">💪 ステータス永続強化（何回でも購入可）</div>
+        <div class="shop-upgrade-grid">
+          <button class="shop-upgrade-btn hp-up-btn${canBuyHpUp ? '' : ' shop-disabled'}" data-action="shop-buy-hp" ${
+            canBuyHpUp ? '' : 'disabled'
+          }>
+            <span class="up-title">❤️ 最大HP ＋100</span>
+            <span class="up-sub">${s.player.maxHp} → <b>${s.player.maxHp + 100}</b>（HPも+100）｜ 💰 ${SHOP_HP_UP_COST.toLocaleString()} 銭</span>
+          </button>
+          ${atkUpgradeButtons}
+        </div>
+      </div>
+
+      <div class="shop-section">
+        <div class="shop-sec-title">🛒 装備ラインナップ（クリックで購入）</div>
         <div class="equip-choices shop-grid">${buyCards}</div>
       </div>
 
@@ -579,6 +512,19 @@ export function renderBattle(v: BattleView): string {
   const s = v.state;
   const { ui, preview } = v;
   const activeEquips = getActiveEquips(s);
+  const scoreCtx = buildScoreContext(s);
+
+  const isSpecialSelectMode = Boolean(ui.riichiSelectMode || ui.copyMode || ui.searchMode);
+  const { guideTiles, guideMelds } = !isSpecialSelectMode
+    ? getYakuGuideHighlights(s.hand, s.melds, scoreCtx)
+    : { guideTiles: new Set<TileId>(), guideMelds: new Set<number>() };
+
+  const hasCurrentYaku = Boolean(preview.ev && preview.ev.yaku.length > 0);
+  const isNoYakuFull = Boolean(
+    !hasCurrentYaku &&
+      !s.riichi &&
+      ui.selected.size + ui.selectedMelds.size * 3 >= 3,
+  );
 
   const monsterFx = v.events
     .filter((e) => e.target === 'monster')
@@ -604,17 +550,20 @@ export function renderBattle(v: BattleView): string {
   // キープしたカン
   const melds = s.melds
     .map((m, i) => {
-      const sel = ui.selectedMelds.has(i) ? ' selected' : '';
+      const isSelected = ui.selectedMelds.has(i);
+      const isGuide = guideMelds.has(i);
+      const sel = isSelected ? ' selected' : '';
+      const guideCls = isGuide ? ' meld-yaku-guide' : '';
       const tiles = m.tiles
         .map((t, j) => {
           const mod = effectiveTileMod(t, s.tileMods, activeEquips);
           const pwr = calcSingleTilePower(m.kind, activeEquips, s.bonusTileAtk);
           return j === 0 || j === 3
             ? tileHtml(m.kind, '', 'back', { mod, power: pwr })
-            : tileHtml(m.kind, '', '', { mod, power: pwr });
+            : tileHtml(m.kind, '', '', { mod, power: pwr, yakuGuide: isGuide && j === 1 });
         })
         .join('');
-      return `<div class="meld${sel}" data-meld="${i}" title="キープしたカン（2セット役以上で使用可）">${tiles}</div>`;
+      return `<div class="meld${sel}${guideCls}" data-meld="${i}" title="キープしたカン（2セット役以上で使用可）">${tiles}</div>`;
     })
     .join('');
 
@@ -643,17 +592,39 @@ export function renderBattle(v: BattleView): string {
       const orderIdx = ui.selectionOrder.indexOf(t);
       const isNew = drawnSet.has(t);
       const isSeparatedTsumo = t === separatedTsumoTile;
+      const isSelected = ui.selected.has(t);
+      const isGuide = guideTiles.has(t);
+
+      // 現在の選択状態から追加選択不可かどうかを判定
+      let isLimitDisabled = false;
+      if (!isSpecialSelectMode && !isSelected && sealed === 0 && !s.riichi) {
+        if (hasCurrentYaku || isNoYakuFull) {
+          const canExtendYaku =
+            findBestYakuCombo(
+              s.hand,
+              s.melds,
+              scoreCtx,
+              new Set([...ui.selected, t]),
+              ui.selectedMelds,
+            ) !== null;
+          if (!canExtendYaku) {
+            isLimitDisabled = true;
+          }
+        }
+      }
+
       const riichiCls = validRiichiDiscards
         ? validRiichiDiscards.has(t)
           ? 'riichi-candidate'
           : 'riichi-disabled'
         : '';
       const cls = [
-        ui.selected.has(t) ? 'selected' : '',
+        isSelected ? 'selected' : '',
         isNew ? 'new' : '',
         isNew && ui.drawAnimActive ? 'draw-in' : '',
         isSeparatedTsumo ? 'tsumo-gap' : '',
         riichiCls,
+        isLimitDisabled ? 'tile-limit-disabled' : '',
         (ui.copyMode && orderIdx === 0) || (orderIdx === 0 && ui.selectionOrder.length === 2)
           ? 'copy-target'
           : '',
@@ -665,12 +636,13 @@ export function renderBattle(v: BattleView): string {
         power: pwr,
         sealed,
         isTsumo: isNew,
+        yakuGuide: isGuide,
       });
     })
     .join('');
 
   const isModalBlockedByAnim = Boolean(
-    ui.isEnemyTurnAnimating || ui.isEnemyDefeatAnimating || ui.isLevelUpAnimating,
+    ui.isEnemyTurnAnimating || ui.isEnemyDefeatAnimating,
   );
 
   // 装備スキルの表示判定（現在使用可能なもののみ表示）
@@ -686,15 +658,14 @@ export function renderBattle(v: BattleView): string {
   const canSearchNow = canUseSkillsNow && hasSearchSkill && s.cooldowns.search === 0;
   const hasAnyUsableSkill = canToggleHealNow || canResetWallNow || canCopyNow || canSearchNow;
 
-  const playableHandCount = s.hand.filter((t) => !(s.sealedTiles[t] > 0)).length;
-  const canSelectAll =
+  const canAutoSelectYaku =
     !isModalBlockedByAnim &&
     !s.riichi &&
-    !ui.riichiSelectMode &&
-    !ui.copyMode &&
-    !ui.searchMode &&
-    playableHandCount > 0 &&
-    (ui.selected.size < playableHandCount || ui.selectedMelds.size < s.melds.length);
+    !isSpecialSelectMode &&
+    (guideTiles.size > 0 || guideMelds.size > 0) &&
+    ui.selected.size === 0 &&
+    ui.selectedMelds.size === 0;
+
   const canClearSelection =
     !isModalBlockedByAnim &&
     !s.riichi &&
@@ -722,12 +693,12 @@ export function renderBattle(v: BattleView): string {
   const result = sc
     ? `<div class="overlay"><div class="result ${s.status}">
           <h2>${s.status === 'won' ? `全${MAX_STAGE}連戦 制覇！！` : `第${s.stage}戦 敗北……`}</h2>
-          <p>到達ステージ: ${s.stage} / ${MAX_STAGE} ｜ Lv.${s.player.level} ｜ 残りHP ${s.player.hp.toLocaleString()}</p>
+          <p>到達ステージ: ${s.stage} / ${MAX_STAGE} ｜ 残りHP ${s.player.hp.toLocaleString()} / ${s.player.maxHp.toLocaleString()}</p>
           <div class="score-breakdown">
             <table>
               <tbody>
                 <tr><th>勝ち抜きステージ（${sc.stagesCleared}戦${s.status === 'won' ? '＋全制覇' : ''}）</th><td>+${sc.stageScore.toLocaleString()} pt</td></tr>
-                <tr><th>到達レベル（Lv.${s.player.level}）</th><td>+${sc.levelScore.toLocaleString()} pt</td></tr>
+                <tr><th>永続攻撃強化（合計+${sc.permAtkTotal}）</th><td>+${sc.permScore.toLocaleString()} pt</td></tr>
                 <tr><th>成立させた役（計${sc.yakuCount}回）</th><td>+${sc.yakuScore.toLocaleString()} pt</td></tr>
                 <tr><th>所持装備（計${sc.equipCount}個）</th><td>+${sc.equipScore.toLocaleString()} pt</td></tr>
                 <tr class="score-total-row"><th>🏆 最終スコア</th><td>${sc.totalScore.toLocaleString()} pt</td></tr>
@@ -766,10 +737,6 @@ export function renderBattle(v: BattleView): string {
     : s.monster.hp <= 0
       ? ' enemy-darkout'
       : '';
-  const playerLvUpCls = ui.isLevelUpAnimating ? ' player-levelup' : '';
-  const lvUpBanner = ui.isLevelUpAnimating
-    ? '<div class="lvup-banner"><span class="lvup-text">LV UP！</span></div>'
-    : '';
 
   return `<main class="battle${phaseCls}">
     <section class="enemy${monsterHit}${enemyDefeatCls}">
@@ -873,8 +840,8 @@ export function renderBattle(v: BattleView): string {
                         : ''
                   }
                   ${
-                    canSelectAll
-                      ? '<button class="btn-clear" data-action="select-all">全選択</button>'
+                    canAutoSelectYaku
+                      ? '<button class="btn-yaku" data-action="select-best-yaku">🌟 役候補を自動選択</button>'
                       : ''
                   }
                   ${
@@ -920,20 +887,17 @@ export function renderBattle(v: BattleView): string {
       </div>
     </section>
 
-    <section class="player${playerHit}${playerLvUpCls}">
+    <section class="player${playerHit}">
       <div class="player-head">
-        <span>${getJobDef(s.job).icon}${esc(getJobDef(s.job).name)}（Lv.${s.player.level} ／ 攻撃補正 ×${(1 + s.player.level / 4).toFixed(2)}）</span>
+        <span>${getJobDef(s.job).icon}${esc(getJobDef(s.job).name)}</span>
         <span class="money-badge">💰 ${s.money.toLocaleString()} 銭</span>
-        ${expBar(s.player.exp, expForNextLevel(s.player.level))}
       </div>
       ${hpBar(s.player.hp, s.player.maxHp, 'player-hp')}
       <div class="equip-bar">
         <span class="equip-label">所持装備：</span>
         <div class="equip-list">${equipBadges}</div>
       </div>
-      ${lvUpBanner}
     </section>
-    ${renderLevelUpModal(s, ui)}
     ${renderRewardModal(s, ui)}
     ${renderShopModal(s, ui)}
     ${result}

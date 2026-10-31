@@ -8,9 +8,14 @@ import {
   getRiichiWaits,
   Mentsu,
 } from '../src/core/mentsu';
-import { ScoreContext, evaluateSelection } from '../src/core/score';
+import {
+  ScoreContext,
+  evaluateSelection,
+  findBestYakuCombo,
+  getYakuGuideHighlights,
+} from '../src/core/score';
 import { TileId, baseTileAttack, kindOf, numOf, suitOf } from '../src/core/tile';
-import { YAKU_CATALOG, calcYakuScore } from '../src/core/yaku';
+import { YAKU_CATALOG, calcYakuMoneyBonus, calcYakuScore } from '../src/core/yaku';
 import { EQUIPMENTS, getEquipment } from '../src/data/equipments';
 import { MONSTERS } from '../src/data/monsters';
 
@@ -98,17 +103,19 @@ describe('新ダメージ計算とセットボーナス・職業効果', () => {
     });
   });
 
-  it('レベル補正 ×(1+level/4) とセット内の色牌（金・赤・虹）発動条件', () => {
-    const t = tiles('111m'); // 10*3 + 20 = 50, 1セット×1.5 = 75
-    // Lv4なら ×(1 + 4/4) = ×2 → 50 * 1.5 * 2 = 150
-    expect(evaluateSelection(t, [], { level: 4 }).damage).toBe(150);
-    // セット内に金牌2枚なら ×(1 + 0.5*2) = ×2 → 300
+  it('永続攻撃力ボーナス（bonusTileAtk）とセット内の色牌（金・赤・虹）発動条件', () => {
+    const t = tiles('111m'); // (10)*3 + 20 = 50, 1セット×1.5 = 75
+    expect(evaluateSelection(t, []).damage).toBe(75);
+    // 萬子+4の永続ボーナスがあれば (14*3 + 20) * 1.5 = 93
+    expect(
+      evaluateSelection(t, [], { bonusTileAtk: { m: 4, p: 0, s: 0, wind: 0, dragon: 0 } }).damage,
+    ).toBe(93);
+    // セット内に金牌2枚なら ×(1 + 0.5*2) = ×2 → 75 * 2 = 150
     expect(
       evaluateSelection(t, [], {
-        level: 4,
         tileMods: { [t[0]]: 'gold', [t[1]]: 'gold' },
       }).damage,
-    ).toBe(300);
+    ).toBe(150);
 
     // セット外の単牌・ペアに金・赤・虹が含まれていても色牌効果は発動しない
     const singleGold = tiles('5m');
@@ -131,21 +138,52 @@ describe('新ダメージ計算とセットボーナス・職業効果', () => {
     expect(evaluateSelection(tiles('123m'), [kan]).valid).toBe(false);
     // 二暗刻＋タンヤオ（2セット役）なら使用可能：
     // 牌攻撃力: 2筒×4(8) + 3索×3(9) = 17, ボーナス: カン(30) + 同牌(20) = 50 → 計67
-    // カン1つ含みで基本攻撃力 ×1.5 = 100.5, タンヤオ ×1.5, 2セット倍率 ×2 → 301.5 → 302
+    // カン1つ含みで基本攻撃力 ×1.5 = 100.5, 二暗刻 ×1.5 × タンヤオ ×2 = ×3, 2セット倍率 ×2 → 603
     const r = evaluateSelection(tiles('333s'), [kan]);
     expect(r.valid).toBe(true);
     expect(r.yaku.map((y) => y.name)).toEqual(expect.arrayContaining(['二暗刻', 'タンヤオ']));
-    expect(r.damage).toBe(302);
+    expect(r.damage).toBe(603);
+  });
+
+  it('役なし攻撃は3枚まで、役攻撃時は役に絡まない牌・セットは選択不可、役選択ガイドが機能する', () => {
+    // 役なしで3枚までは有効（単牌3枚、ペア＋単牌、1セット）
+    expect(ev('2m5p8s').valid).toBe(true);
+    expect(ev('55m8s').valid).toBe(true);
+    expect(ev('234m').valid).toBe(true);
+    // 役なしで4枚以上は無効
+    expect(ev('2m5p8s1z').valid).toBe(false);
+    expect(ev('234m5p').valid).toBe(false);
+    expect(ev('234m123p').valid).toBe(false); // 役なし2セットも不可
+
+    // 役攻撃時でも、役に絡まない単牌・ペア・セットが含まれている場合は無効
+    expect(ev('555z2m').valid).toBe(false); // 白セット＋無関係単牌
+    expect(ev('555z22m').valid).toBe(false); // 白セット＋無関係ペア
+    expect(ev('555z234m').valid).toBe(false); // 白セット＋無関係セット
+    // 双方のセットが役に絡む場合（白セット＋發セット、混一色など）は有効
+    expect(ev('555z666z').valid).toBe(true);
+    expect(ev('123m456m555z').valid).toBe(true); // 混一色
+
+    // 役選択ガイド：手牌から成立可能な役の構成牌がハイライトされ、クリック時に自動選択される
+    const hand = tiles('555z234m55p8s'); // 白セット(555z)のみが成立可能な手牌
+    const guide = getYakuGuideHighlights(hand, [], {});
+    expect(guide.guideTiles.has(hand[0])).toBe(true);
+    expect(guide.guideTiles.has(hand[1])).toBe(true);
+    expect(guide.guideTiles.has(hand[2])).toBe(true);
+    expect(guide.guideTiles.has(hand[3])).toBe(false);
+
+    const best = findBestYakuCombo(hand, [], {}, new Set([hand[0]]), new Set());
+    expect(best).not.toBeNull();
+    expect(best!.tiles).toEqual(hand.slice(0, 3));
   });
 });
 
 describe('役と効果の判定', () => {
-  it('1セット役：白・發（2倍×1セット1.5倍）・中', () => {
+  it('1セット役：白・發（2.5倍×1セット1.5倍）・中', () => {
     expect(yakuNames('555z')).toEqual(['白セット']);
     expect(ev('666z')).toMatchObject({
-      yaku: [{ id: 'hatsu', name: '發セット', dmgMult: 2, chains: 1 }],
+      yaku: [{ id: 'hatsu', name: '發セット', dmgMult: 2.5, chains: 1 }],
       setCountMult: 1.5,
-      damage: Math.round((30 + 20) * 2 * 1.5),
+      damage: Math.round((30 + 20) * 2.5 * 1.5),
     });
     expect(yakuNames('777z')).toEqual(['中セット']);
   });
@@ -228,12 +266,12 @@ describe('役と効果の判定', () => {
     expect(rNinjaWind.jobDmgMult).toBe(2.5);
     expect(rNinjaWind.gainedChains).toBe(1);
 
-    // ねこまんと(nekomanto)：ねこぱんち（含むペア数倍の威力＆ペア数分のチェーン）＋四対子強化
+    // ねこまんと(nekomanto)：ねこぱんち（含むペア数×1.5倍の威力＆ペア数分のチェーン）＋四対子強化
     const rNeko2Pairs = ev('55m77p', [], { job: 'nekomanto' });
     expect(rNeko2Pairs.yaku.map((y) => y.id)).toContain('neko_punch');
     expect(rNeko2Pairs.gainedChains).toBe(2);
-    // 5m×2(10)+7p×2(14) + ペアボーナス5×2(10) = 34、ねこぱんち2ペアで威力2倍 → 68
-    expect(rNeko2Pairs.damage).toBe(68);
+    // 5m×2(10)+7p×2(14) + ペアボーナス5×2(10) = 34、ねこぱんち2ペアで威力3倍 → 102
+    expect(rNeko2Pairs.damage).toBe(102);
 
     const rNekoFourPairs = ev('11m33p55s77z', [], { job: 'nekomanto' });
     expect(rNekoFourPairs.yaku.map((y) => y.id)).toEqual(
@@ -241,12 +279,12 @@ describe('役と効果の判定', () => {
     );
     expect(rNekoFourPairs.gainedChains).toBe(8); // 四対子(4) + ねこぱんち4ペア(4)
 
-    // ゆかこ(yukako)：セット1つ以上かつ他の役がないとき「つよつよこうげき（威力3倍・チェーン1）」成立
+    // ゆかこ(yukako)：セット1つ以上かつ他の役がないとき「つよつよこうげき（威力3.5倍・チェーン1）」成立
     const rYukakoNoOtherYaku = ev('234m', [], { job: 'yukako' });
     expect(rYukakoNoOtherYaku.yaku.map((y) => y.id)).toEqual(['tsuyotsuyo']);
     expect(rYukakoNoOtherYaku.gainedChains).toBe(1);
-    // 234m(9 + 10 = 19) × 1セット(1.5) × つよつよ(3) = 85.5 → 86
-    expect(rYukakoNoOtherYaku.damage).toBe(86);
+    // 234m(9 + 10 = 19) × 1セット(1.5) × つよつよ(3.5) = 99.75 → 100
+    expect(rYukakoNoOtherYaku.damage).toBe(100);
 
     // 他の役（白セットなど）がある場合は「つよつよこうげき」は発生しない
     const rYukakoWithYaku = ev('555z', [], { job: 'yukako' });
@@ -448,24 +486,38 @@ describe('戦闘・チェーン・特殊行動・連戦システム', () => {
     expect(rSell.state.money).toBe(4750);
     expect(rSell.state.equipments).not.toContain('atk_man_2');
 
+    // 商店で永続ステータス強化（最大HP+100、牌攻撃力+2：各500銭で何度でも購入可）
+    const rUpHp = step(rSell.state, { type: 'buy_shop_hp' });
+    expect(rUpHp.error).toBeUndefined();
+    expect(rUpHp.state.money).toBe(4250);
+    expect(rUpHp.state.player.maxHp).toBe(400);
+    expect(rUpHp.state.player.hp).toBe(290);
+
+    const rUpAtk = step(rUpHp.state, { type: 'buy_shop_atk', group: 'm' });
+    expect(rUpAtk.error).toBeUndefined();
+    expect(rUpAtk.state.money).toBe(3750);
+    expect(rUpAtk.state.bonusTileAtk.m).toBe(2);
+
     // 商店を出るとステージ4へ進む
-    const rLeave = step(rSell.state, { type: 'leave_shop' });
+    const rLeave = step(rUpAtk.state, { type: 'leave_shop' });
     expect(rLeave.error).toBeUndefined();
     expect(rLeave.state.status).toBe('playing');
     expect(rLeave.state.stage).toBe(4);
   });
 
-  it('役固有の効果・バフ重複加算・レベルアップ時「癒しの戦旗」が正しく動作する', () => {
+  it('役固有の効果・永続ステータスボーナス・バフ重複加算・役成立時「癒しの戦旗」が正しく動作する', () => {
     const s0 = newBattle(MONSTERS[7], 42); // 高HPの敵
 
-    // 中セット：補充牌3枚が金牌になる
+    // 中セット：補充牌3枚が金牌になり、永続ボーナスとして三元牌攻撃力+4＆銭+200を得る
     const sChun: BattleState = { ...s0, hand: tiles('777z123m456p') };
     const rChun = step(sChun, { type: 'attack', tiles: tiles('777z'), melds: [] });
     expect(rChun.error).toBeUndefined();
     expect(rChun.state.drawn).toHaveLength(3);
     expect(rChun.state.drawn.every((t) => rChun.state.tileMods[t] === 'gold')).toBe(true);
+    expect(rChun.state.bonusTileAtk.dragon).toBe(4);
+    expect(rChun.state.money).toBe(200); // 1セット役(100) + 中セット追加(100)
 
-    // 平和バフが既に3ターン残っている状態で平和を成立させると、3 + 5 = 8ターンに加算される
+    // 平和バフが既に3ターン残っている状態で平和を成立させると、3 + 5 = 8ターンに加算され、全数牌攻撃力+3＆最大HP+50
     const sPinfu: BattleState = {
       ...s0,
       hand: tiles('123m456p789s'),
@@ -474,56 +526,124 @@ describe('戦闘・チェーン・特殊行動・連戦システム', () => {
     const rPinfu = step(sPinfu, { type: 'attack', tiles: sPinfu.hand, melds: [] });
     expect(rPinfu.error).toBeUndefined();
     expect(rPinfu.state.buffs.pinfuTurns).toBe(8);
+    expect(rPinfu.state.bonusTileAtk.m).toBe(3);
+    expect(rPinfu.state.bonusTileAtk.p).toBe(3);
+    expect(rPinfu.state.bonusTileAtk.s).toBe(3);
+    expect(rPinfu.state.player.maxHp).toBe(s0.player.maxHp + 50);
 
-    // レベルアップ時はデフォルトではHPが回復せず、「癒しの戦旗（banner_heal_20）」所持時のみ20%回復する
-    const sTsuuNoBanner: BattleState = {
+    // 「癒しの戦旗（banner_heal_20）」所持時は役成立ごとに最大HPの20%を回復する
+    const sHakuWithBanner: BattleState = {
+      ...s0,
+      hand: tiles('555z123m456p'),
+      player: { ...s0.player, hp: 100, maxHp: 300 },
+      equipments: ['banner_heal_20'],
+    };
+    const rHakuBanner = step(sHakuWithBanner, {
+      type: 'attack',
+      tiles: tiles('555z'),
+      melds: [],
+    });
+    expect(rHakuBanner.error).toBeUndefined();
+    // 癒しの戦旗(round(300*0.2)=60) + 白セット永続強化(maxHp+15, hp+15) + 白セット効果(round(315*0.15)=47) → 100 + 60 + 15 + 47 = 222
+    expect(rHakuBanner.state.player.maxHp).toBe(315);
+    expect(rHakuBanner.state.player.hp).toBe(222);
+
+    // 字一色：全字牌大幅永続強化（最大HP+150・風牌+15・三元牌+15）＆デバフ全解除
+    const sTsuu: BattleState = {
       ...s0,
       hand: tiles('111222555z'),
       player: { ...s0.player, hp: 100, maxHp: 300 },
+      buffs: { ...s0.buffs, venomTurns: 3, atkDownTurns: 2 },
     };
-    const rTsuuNoBanner = step(sTsuuNoBanner, { type: 'attack', tiles: sTsuuNoBanner.hand, melds: [] });
-    expect(rTsuuNoBanner.state.player.level).toBeGreaterThanOrEqual(3);
-    expect(rTsuuNoBanner.state.player.hp).toBe(100); // 癒しの戦旗なしでは回復しない
-
-    const sTsuuWithBanner: BattleState = {
-      ...sTsuuNoBanner,
-      equipments: ['banner_heal_20'],
-    };
-    const rTsuuWithBanner = step(sTsuuWithBanner, {
+    const rTsuu = step(sTsuu, {
       type: 'attack',
-      tiles: sTsuuWithBanner.hand,
+      tiles: sTsuu.hand,
       melds: [],
     });
-    expect(rTsuuWithBanner.state.player.hp).toBeGreaterThan(100); // 癒しの戦旗ありなら回復する
+    expect(rTsuu.error).toBeUndefined();
+    expect(rTsuu.state.player.maxHp).toBe(450); // 300 + 150
+    expect(rTsuu.state.player.hp).toBe(250); // 100 + 150
+    expect(rTsuu.state.bonusTileAtk).toEqual({ m: 0, p: 0, s: 0, wind: 15, dragon: 15 });
+    expect(rTsuu.state.buffs.venomTurns).toBe(0);
+    expect(rTsuu.state.buffs.atkDownTurns).toBe(0);
+  });
 
-    // 役なし攻撃でレベルアップした場合：レベルアップの瞬間にボーナス選択待ちとなり、選択後に敵の行動が発生する
-    const sLvTiming: BattleState = {
-      ...s0,
-      hand: tiles('1m2p3s4m5p6s7m8p9s'),
-      player: { ...s0.player, hp: 300, maxHp: 300, level: 0, exp: 299 },
-      buffs: { ...s0.buffs, nullifyDamage: true },
+  it('ボスの新特殊行動（巨体で突き飛ばす・吹雪の息・業火の息・天災）が仕様通り動作する', () => {
+    const bossWeights: [number, number, number, number] = [0, 0, 0, 100];
+
+    // 1. 巨体で突き飛ばす（titan_slam）：2倍ダメージ＋手牌2枚強制交換
+    const golemDef = { ...MONSTERS[5], weights: bossWeights, bossSkills: ['titan_slam'] as const };
+    const sGolem0 = newBattle(golemDef, 101);
+    const sGolem: BattleState = { ...sGolem0, hand: tiles('2m3m4m5p6p7p1s2s9s') };
+    const rGolem = step(sGolem, { type: 'attack', tiles: [sGolem.hand[0]], melds: [] });
+    expect(rGolem.monsterTurnSteps![0].declareText).toContain('巨体で突き飛ばす');
+    expect(rGolem.monsterTurnSteps![0].events[0].amount).toBeGreaterThanOrEqual(
+      Math.floor(golemDef.atk * 0.9) * 2,
+    );
+
+    // 2. 吹雪の息（blizzard_breath）：1.5倍ダメージ＋手牌3枚を2ターン封印
+    const knightDef = {
+      ...MONSTERS[6],
+      weights: bossWeights,
+      bossSkills: ['blizzard_breath'] as const,
     };
-    const rLvAtk = step(sLvTiming, { type: 'attack', tiles: [sLvTiming.hand[0]], melds: [] });
-    expect(rLvAtk.error).toBeUndefined();
-    expect(rLvAtk.state.player.level).toBe(1);
-    expect(rLvAtk.state.pendingLevelUps).toBe(1);
-    expect(rLvAtk.state.pendingMonsterTurn).toBe(true);
-    expect(rLvAtk.state.turn).toBe(1); // まだ敵は行動していない
-    expect(rLvAtk.monsterTurnSteps).toBeUndefined();
-    expect(rLvAtk.state.log.some((l) => l.text.includes('レベルアップ！'))).toBe(false);
+    const sKnight0 = newBattle(knightDef, 102);
+    const sKnight: BattleState = { ...sKnight0, hand: tiles('2m3m4m5p6p7p1s2s9s') };
+    const rKnight = step(sKnight, { type: 'attack', tiles: [sKnight.hand[0]], melds: [] });
+    expect(rKnight.monsterTurnSteps![0].declareText).toContain('吹雪の息');
+    expect(Object.keys(rKnight.state.sealedTiles)).toHaveLength(3);
 
-    // ボーナス選択（最大HP+100）を行うと、HPが+100された直後に敵の行動が実行されターン2へ進む
-    const rLvBonus = step(rLvAtk.state, {
-      type: 'choose_level_bonus',
-      bonus: { type: 'hp_100' },
-    });
-    expect(rLvBonus.error).toBeUndefined();
-    expect(rLvBonus.state.pendingLevelUps).toBe(0);
-    expect(rLvBonus.state.pendingMonsterTurn).toBe(false);
-    expect(rLvBonus.state.player.maxHp).toBe(400);
-    expect(rLvBonus.state.player.hp).toBe(400);
-    expect(rLvBonus.monsterTurnSteps).toBeDefined();
-    expect(rLvBonus.state.turn).toBe(2);
+    // 3. 業火の息（hellfire_breath）：1.5倍ダメージ＋強化牌（金・赤・虹・装備赤牌含む）をすべて通常牌に消去
+    const chimeraDef = {
+      ...MONSTERS[7],
+      weights: bossWeights,
+      bossSkills: ['hellfire_breath'] as const,
+    };
+    const sChimera0 = newBattle(chimeraDef, 103);
+    const handWithMods = tiles('456m2m3m5p6p7p9s'); // 456m を含む
+    const sChimera: BattleState = {
+      ...sChimera0,
+      hand: handWithMods,
+      equipments: ['all_five_red'], // 5の牌が赤牌になる装備
+      tileMods: {
+        [handWithMods[0]]: 'gold',
+        [handWithMods[2]]: 'rainbow',
+      },
+    };
+    const rChimera = step(sChimera, { type: 'attack', tiles: [handWithMods[8]], melds: [] });
+    expect(rChimera.monsterTurnSteps![0].declareText).toContain('業火の息');
+    expect(rChimera.state.tileMods[handWithMods[0]]).toBe('normal');
+    expect(rChimera.state.tileMods[handWithMods[2]]).toBe('normal');
+    // 装備で赤牌になっていた5萬(handWithMods[1])も 'normal' になり赤牌効果が消える
+    expect(rChimera.state.tileMods[handWithMods[1]]).toBe('normal');
+    const evAfterHellfire = evaluateSelection(
+      handWithMods.slice(0, 3), // 456m
+      [],
+      { tileMods: rChimera.state.tileMods, activeEquips: ['all_five_red'] },
+    );
+    expect(evAfterHellfire.redCount).toBe(0);
+    expect(evAfterHellfire.goldCount).toBe(0);
+    expect(evAfterHellfire.rainbowCount).toBe(0);
+
+    // 4. 天災（cataclysm）：2.5倍ダメージ＋手牌すべて強制交換
+    const dragonDef = {
+      ...MONSTERS[9],
+      weights: bossWeights,
+      bossSkills: ['cataclysm'] as const,
+      actionsPerTurn: 1,
+    };
+    const sDragon0 = newBattle(dragonDef, 104);
+    const sDragon: BattleState = {
+      ...sDragon0,
+      player: { ...sDragon0.player, hp: 500, maxHp: 500 },
+      hand: tiles('2m3m4m5p6p7p1s2s9s'),
+    };
+    const rDragon = step(sDragon, { type: 'attack', tiles: [sDragon.hand[0]], melds: [] });
+    expect(rDragon.monsterTurnSteps![0].declareText).toContain('天災');
+    expect(rDragon.monsterTurnSteps![0].events[0].amount).toBeGreaterThanOrEqual(
+      Math.round(Math.floor(dragonDef.atk * 0.9) * 2.5),
+    );
+    expect(rDragon.state.hand).toHaveLength(9);
   });
 
   it('敵が「ためる」状態のときは次の行動が必ず「通常攻撃」になる', () => {
@@ -551,7 +671,7 @@ describe('戦闘・チェーン・特殊行動・連戦システム', () => {
       equipments: ['unlock_heal', 'skill_reset_wall', 'skill_copy', 'skill_search'],
     };
 
-    // 治療ONで攻撃 → 自分のHPが回復する
+    // 治療ONで攻撃 → 自分のHPが回復する（234m 567p = タンヤオ役成立時）
     const rHealOn = step(s, { type: 'toggle_heal' });
     expect(rHealOn.state.healMode).toBe(true);
     const rHealAtk = step(rHealOn.state, { type: 'attack', tiles: handTiles.slice(0, 6), melds: [] });
@@ -661,23 +781,30 @@ describe('戦闘・チェーン・特殊行動・連戦システム', () => {
     expect(sFourPairs).toBeLessThan(sPinfu);
     expect(sPinfu).toBeLessThan(sDaisangen);
 
+    // 役成立ごとの取得銭ボーナス（倍増後：1セット役100、2セット役250、四対子350、3セット役600、役満1000）
+    expect(calcYakuMoneyBonus(ev('555z').yaku[0])).toBe(100);
+    expect(calcYakuMoneyBonus(ev('234m555p').yaku[0])).toBe(250);
+    expect(calcYakuMoneyBonus(ev('11m33p55s77z').yaku[0])).toBe(350);
+    expect(calcYakuMoneyBonus(ev('123m456p789s').yaku[0])).toBe(600);
+    expect(calcYakuMoneyBonus(ev('555666777z').yaku[0])).toBe(1000);
+
     const s0 = newBattle(MONSTERS[0], 123);
-    const attackTiles = tiles('555666777z'); // 大三元（役満ご祝儀 +500銭）
+    const attackTiles = tiles('555666777z'); // 大三元（役満ご祝儀 +1000銭）
     const s: BattleState = {
       ...s0,
       hand: attackTiles,
       tileMods: {
-        [attackTiles[0]]: 'gold', // セット内：+15銭
-        [attackTiles[1]]: 'red', // セット内：+25銭
-        [attackTiles[2]]: 'rainbow', // セット内：+50銭
+        [attackTiles[0]]: 'gold', // セット内：+30銭
+        [attackTiles[1]]: 'red', // セット内：+50銭
+        [attackTiles[2]]: 'rainbow', // セット内：+100銭
       },
-      equipments: ['unlock_tanyao'], // 招財の算盤（1役につき+30銭）
+      equipments: ['unlock_tanyao'], // 招財の算盤（1役につき+60銭）
     };
 
     const r = step(s, { type: 'attack', tiles: attackTiles, melds: [] });
     expect(r.error).toBeUndefined();
-    // 金(15) + 赤(25) + 虹(50) + 役満祝儀(500) + 招財の算盤(30) + ステージ1撃破(50) = 670銭
-    expect(r.state.money).toBe(670);
+    // 金(30) + 赤(50) + 虹(100) + 役満祝儀(1000) + 招財の算盤(60) + ステージ1撃破(100) = 1340銭
+    expect(r.state.money).toBe(1340);
 
     const sc = calculateScore(r.state);
     expect(sc.yakuScore).toBe(5000);

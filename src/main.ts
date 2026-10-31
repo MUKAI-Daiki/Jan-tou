@@ -18,7 +18,7 @@ import {
   kanCandidates,
 } from './core/mentsu';
 import { randomSeed } from './core/rng';
-import { evaluateSelection } from './core/score';
+import { evaluateSelection, findBestYakuCombo } from './core/score';
 import { TileGroup, kindName, kindOf } from './core/tile';
 import { JobId } from './data/equipments';
 import { MONSTERS, MonsterDef } from './data/monsters';
@@ -27,14 +27,13 @@ import { Preview, UiState, renderBattle, renderTitle } from './ui/render';
 const app = document.getElementById('app')!;
 
 const PLAYER_CHAR_MS = 44; // プレイヤーの文字送り間隔
-const MONSTER_CHAR_MS = 58; // 敵の文字送り速さを50%アップ（88ms → 58ms）
+const MONSTER_CHAR_MS = 58; // 敵の文字送り間隔
 const ENEMY_WAIT_MS = 300; // 敵ターンの各節目の0.3秒ウェイト
 const SLIDE_OUT_MS = 220; // 行移行時のスライドアウト時間
 const SLIDE_IN_WAIT_MS = 220; // 行移行時のスライドイン＆ウェイト時間
 const ATTACK_OUT_MS = 180; // 攻撃牌の上方向スライド＋フェードアウト時間
 const DRAW_IN_MS = 300; // 補充牌の下方向スライドイン＋フラッシュ時間
 const ENEMY_DEFEAT_MS = 950; // 敵撃破時の点滅→ダークアウト演出時間
-const LEVEL_UP_MS = 950; // レベルアップ時の発光＋LV UP！スライドイン演出時間
 
 let screen: 'title' | 'battle' = 'title';
 let state: BattleState | null = null;
@@ -61,12 +60,10 @@ const ui: UiState = {
   isEnemyTurnAnimating: false,
   drawAnimActive: false,
   isEnemyDefeatAnimating: false,
-  isLevelUpAnimating: false,
   logOpen: false,
   liveLogText: '',
   liveLogSide: 'system',
   liveLogTransition: 'idle',
-  levelBonusStep: 'root',
   message: '',
 };
 
@@ -74,7 +71,6 @@ function isBusyAnimating(): boolean {
   return Boolean(
     ui.isEnemyTurnAnimating ||
       ui.isEnemyDefeatAnimating ||
-      ui.isLevelUpAnimating ||
       attackOutTimer !== null,
   );
 }
@@ -110,7 +106,6 @@ function stopTypewriter() {
   ui.isEnemyTurnAnimating = false;
   ui.drawAnimActive = false;
   ui.isEnemyDefeatAnimating = false;
-  ui.isLevelUpAnimating = false;
   ui.liveLogTransition = 'idle';
   displayedState = null;
 }
@@ -264,7 +259,6 @@ function playMonsterTurnSequence(steps: MonsterTurnStep[], onComplete: () => voi
 
   const runNextMonsterStep = () => {
     if (stepIdx >= steps.length) {
-      // 3. ターンをプレイヤーに返す前の 0.3秒ウェイト
       typewriterTimer = window.setTimeout(() => {
         typewriterTimer = null;
         onComplete();
@@ -276,13 +270,9 @@ function playMonsterTurnSequence(steps: MonsterTurnStep[], onComplete: () => voi
     ui.combatPhase = 'monster';
     syncCombatPhaseDom();
 
-    // 1. 敵行動開始 -> メッセージ表示開始 の 0.3秒ウェイト
     typewriterTimer = window.setTimeout(() => {
-      // スライドアウト・スライドイン＋ウェイトを入れて敵行動宣言を文字送り
       transitionAndTypeLine('monster', mStep.declareText, MONSTER_CHAR_MS, null, () => {
-        // 2. ダメージ or デバフ 表示前 の 0.3秒ウェイト
         typewriterTimer = window.setTimeout(() => {
-          // 行移行のスライドアウト・スライドインを入れつつ、ダメージ/デバフ状態＆赤字ポップアップを反映して結果行を文字送り
           transitionAndTypeLine(
             'monster',
             mStep.effectText,
@@ -334,7 +324,6 @@ function checkAndScheduleAutoRiichi() {
     screen !== 'battle' ||
     state.status !== 'playing' ||
     !state.riichi ||
-    state.pendingLevelUps > 0 ||
     isBusyAnimating()
   ) {
     return;
@@ -350,7 +339,6 @@ function checkAndScheduleAutoRiichi() {
   }
 
   // まだ3セットが揃っていない場合：
-  // 1段階目：右端の自摸牌を確認できるよう少し待ってから選択状態（浮き上がり）にする
   autoRiichiTimer = window.setTimeout(() => {
     if (!state || state.status !== 'playing' || !state.riichi) return;
     if (hasThreeSets(state.hand, state.melds)) return;
@@ -364,13 +352,11 @@ function checkAndScheduleAutoRiichi() {
 
     if (targetTile === undefined) return;
 
-    // 切る自摸牌を浮き上がらせて視覚的に追えるようにする
     ui.selected.clear();
     ui.selected.add(targetTile);
     ui.selectionOrder = [targetTile];
     render();
 
-    // 2段階目：浮き上がった自摸牌を切る
     autoRiichiTimer = window.setTimeout(() => {
       autoRiichiTimer = null;
       if (!state || state.status !== 'playing' || !state.riichi) return;
@@ -487,13 +473,13 @@ function computePreview(s: BattleState): Preview {
       return {
         ...none,
         text: completed
-          ? 'リーチ完成！全選択して攻撃（威力2倍・チェーン・補充30%金化）'
+          ? 'リーチ完成！全選択して攻撃（威力2.5倍・チェーン2・補充50%金化）'
           : `リーチ中：右端の牌を自動入替中（${Math.min(maxSwaps, s.riichiSwapsThisTurn + 1)}/${maxSwaps}枚目）`,
       };
     }
     return {
       ...none,
-      text: '牌を選んで攻撃（セット・役で威力UP＆連続行動）',
+      text: '牌を選んで攻撃（役なし3枚まで ／「役」牌クリックで役候補を自動選択）',
     };
   }
 
@@ -516,12 +502,12 @@ function computePreview(s: BattleState): Preview {
 
   const hasSealedInSelection = tiles.some((t) => (s.sealedTiles[t] ?? 0) > 0);
   const guardAmount = Math.max(1, Math.round(ev.baseAttack));
-  const canGuard = !s.riichi && !ui.riichiSelectMode && !hasSealedInSelection && (tiles.length > 0 || meldIdx.length > 0);
+  const canGuard = !s.riichi && !ui.riichiSelectMode && !hasSealedInSelection && ev.valid;
 
   if (!ev.valid) {
     return {
       ...none,
-      canGuard,
+      canGuard: false,
       guardAmount,
       text: ev.reason ?? '攻撃できません',
       ev,
@@ -544,7 +530,7 @@ function computePreview(s: BattleState): Preview {
       ? ev.yaku.map((y) => `【${y.name}：${y.effectText}】`).join(' ')
       : ev.decomp.sets.length > 0
         ? `セットのみ（×${ev.setCountMult}）`
-        : '役なし';
+        : `役なし（${tiles.length}/3枚）`;
 
   const actionWord = s.healMode ? '回復' : 'ダメージ';
   const chainNotice =
@@ -563,10 +549,10 @@ function computePreview(s: BattleState): Preview {
       ? ` ｜ 麻雀医:HP+${Math.round(ev.basicShuntsuHealRate * 100)}%・2連×${ev.basicDrawSeq2}補充`
       : ''
   }${ev.jobBonusChains > 0 ? ' ｜ 忍び:威力2.5倍・チェーン+1' : ''}`;
-  const yakuExpNote = ev.yakuExp > 0 ? ` ｜ EXP+${Math.round(ev.yakuExp * s.expMult)}` : '';
+  const yakuMoneyNote = ev.yakuMoney > 0 ? ` ｜ 役報酬+${ev.yakuMoney}銭` : '';
   const goldNote = ev.goldCount > 0 ? ` ｜ 金/赤+${ev.goldCount * 50}%` : '';
   const rainbowNote = ev.rainbowCount > 0 ? ` ｜ 虹×${ev.rainbowCount}` : '';
-  const subText = `${parts.join('・')} ｜ 基礎 ${guardAmount}（牌${ev.tilePower}+加点${ev.setBonus}）${setMultNote}${jobNote}${yakuExpNote}${goldNote}${rainbowNote}`;
+  const subText = `${parts.join('・')} ｜ 基礎 ${guardAmount}（牌${ev.tilePower}+加点${ev.setBonus}）${setMultNote}${jobNote}${yakuMoneyNote}${goldNote}${rainbowNote}`;
 
   return {
     text,
@@ -599,9 +585,8 @@ function render() {
   if (log) log.scrollTop = log.scrollHeight;
 }
 
-function scheduleDefeatAndLevelUpAnimations(
+function scheduleDefeatAnimation(
   justDefeatedEnemy: boolean,
-  justLeveledUp: boolean,
   onComplete: () => void,
 ) {
   if (justDefeatedEnemy) {
@@ -610,35 +595,11 @@ function scheduleDefeatAndLevelUpAnimations(
     transitionAnimTimer = window.setTimeout(() => {
       transitionAnimTimer = null;
       ui.isEnemyDefeatAnimating = false;
-      if (justLeveledUp) {
-        ui.isLevelUpAnimating = true;
-        render();
-        transitionAnimTimer = window.setTimeout(() => {
-          transitionAnimTimer = null;
-          ui.isLevelUpAnimating = false;
-          render();
-          onComplete();
-        }, LEVEL_UP_MS);
-      } else {
-        render();
-        onComplete();
-      }
+      render();
+      onComplete();
     }, ENEMY_DEFEAT_MS);
     return;
   }
-
-  if (justLeveledUp) {
-    ui.isLevelUpAnimating = true;
-    render();
-    transitionAnimTimer = window.setTimeout(() => {
-      transitionAnimTimer = null;
-      ui.isLevelUpAnimating = false;
-      render();
-      onComplete();
-    }, LEVEL_UP_MS);
-    return;
-  }
-
   onComplete();
 }
 
@@ -672,11 +633,8 @@ function dispatch(action: Action) {
     const justDefeatedEnemy =
       prevState.status === 'playing' &&
       (r.state.status === 'reward' || r.state.status === 'won');
-    const justLeveledUp =
-      r.state.player.level > prevState.player.level ||
-      r.state.pendingLevelUps > prevState.pendingLevelUps;
 
-    // 敵ターンが発生した場合は、プレイヤーフェーズ ->（必要に応じレベルアップ演出）-> 敵ターンフェーズを順再生
+    // 敵ターンが発生した場合は、プレイヤーフェーズ -> 敵ターンフェーズを順再生
     if (r.monsterTurnSteps && r.monsterTurnSteps.length > 0 && r.afterPlayerState) {
       ui.isEnemyTurnAnimating = true;
       displayedState = r.afterPlayerState;
@@ -691,13 +649,11 @@ function dispatch(action: Action) {
           ui.combatPhase = 'idle';
           pendingEvents = r.state.events;
 
-          scheduleDefeatAndLevelUpAnimations(false, justLeveledUp, () => {
-            if (state && state.status === 'playing' && state.riichi && hasThreeSets(state.hand, state.melds)) {
-              selectAllPlayableTiles(state);
-            }
-            render();
-            checkAndScheduleAutoRiichi();
-          });
+          if (state && state.status === 'playing' && state.riichi && hasThreeSets(state.hand, state.melds)) {
+            selectAllPlayableTiles(state);
+          }
+          render();
+          checkAndScheduleAutoRiichi();
         });
       });
       return;
@@ -706,11 +662,11 @@ function dispatch(action: Action) {
     pendingEvents = r.state.events;
     const newLogs = state.log.slice(prevLogLen);
 
-    if (justDefeatedEnemy || justLeveledUp) {
+    if (justDefeatedEnemy) {
       if (newLogs.length > 0) {
         enqueueLogs(newLogs);
       }
-      scheduleDefeatAndLevelUpAnimations(justDefeatedEnemy, justLeveledUp, () => {
+      scheduleDefeatAnimation(justDefeatedEnemy, () => {
         if (state && state.status === 'playing' && state.riichi && hasThreeSets(state.hand, state.melds)) {
           selectAllPlayableTiles(state);
         }
@@ -765,7 +721,6 @@ function startBattle(def: MonsterDef) {
   ui.logOpen = false;
   ui.showWallModal = false;
   ui.showYakuModal = false;
-  ui.levelBonusStep = 'root';
   render();
   enqueueLogs(state.log);
 }
@@ -830,46 +785,6 @@ app.addEventListener('click', (e) => {
     render();
     return;
   }
-  if (actionEl?.dataset.action === 'level-bonus-hp') {
-    ui.levelBonusStep = 'root';
-    dispatch({ type: 'choose_level_bonus', bonus: { type: 'hp_100' } });
-    return;
-  }
-  if (actionEl?.dataset.action === 'level-bonus-group-menu') {
-    ui.levelBonusStep = 'select_group';
-    render();
-    return;
-  }
-  if (actionEl?.dataset.action === 'level-bonus-kind-menu') {
-    ui.levelBonusStep = 'select_kind';
-    render();
-    return;
-  }
-  if (actionEl?.dataset.action === 'level-bonus-back') {
-    ui.levelBonusStep = 'root';
-    render();
-    return;
-  }
-
-  const levelGroupEl = target.closest<HTMLElement>('[data-level-group]');
-  if (levelGroupEl?.dataset.levelGroup) {
-    ui.levelBonusStep = 'root';
-    dispatch({
-      type: 'choose_level_bonus',
-      bonus: { type: 'tile_atk_2', group: levelGroupEl.dataset.levelGroup as TileGroup },
-    });
-    return;
-  }
-
-  const levelBanishEl = target.closest<HTMLElement>('[data-level-banish-kind]');
-  if (levelBanishEl?.dataset.levelBanishKind !== undefined) {
-    ui.levelBonusStep = 'root';
-    dispatch({
-      type: 'choose_level_bonus',
-      bonus: { type: 'banish_kind', kind: Number(levelBanishEl.dataset.levelBanishKind) },
-    });
-    return;
-  }
 
   const rewardEl = target.closest<HTMLElement>('[data-reward]');
   if (rewardEl?.dataset.reward) {
@@ -880,6 +795,12 @@ app.addEventListener('click', (e) => {
   const shopBuyEl = target.closest<HTMLElement>('[data-shop-buy]');
   if (shopBuyEl?.dataset.shopBuy) {
     dispatch({ type: 'buy_shop_item', equipId: shopBuyEl.dataset.shopBuy });
+    return;
+  }
+
+  const shopAtkEl = target.closest<HTMLElement>('[data-shop-atk]');
+  if (shopAtkEl?.dataset.shopAtk) {
+    dispatch({ type: 'buy_shop_atk', group: shopAtkEl.dataset.shopAtk as TileGroup });
     return;
   }
 
@@ -953,13 +874,72 @@ app.addEventListener('click', (e) => {
       return;
     }
 
+    // 既に選択されている牌を再クリックした場合は個別解除
     if (ui.selected.has(t)) {
       ui.selected.delete(t);
       ui.selectionOrder = ui.selectionOrder.filter((id) => id !== t);
-    } else {
-      ui.selected.add(t);
-      ui.selectionOrder.push(t);
+      ui.message = '';
+      render();
+      return;
     }
+
+    if ((state.sealedTiles[t] ?? 0) > 0) {
+      ui.message = '封印されている牌は選択できません';
+      render();
+      return;
+    }
+
+    // リーチ中（未完成時）は1枚のみ選択
+    if (state.riichi && !hasThreeSets(state.hand, state.melds)) {
+      ui.selected.clear();
+      ui.selected.add(t);
+      ui.selectionOrder = [t];
+      ui.message = '';
+      render();
+      return;
+    }
+
+    const scoreCtx = buildScoreContext(state);
+
+    // 1. 現在の選択＋クリックした牌 t を含む有効な役組み合わせがあれば、その最大役を自動選択（役選択ガイド）
+    const nextRequiredTiles = new Set([...ui.selected, t]);
+    const bestCombo = findBestYakuCombo(
+      state.hand,
+      state.melds,
+      scoreCtx,
+      nextRequiredTiles,
+      ui.selectedMelds,
+    );
+    if (bestCombo) {
+      ui.selected = new Set(bestCombo.tiles);
+      ui.selectedMelds = new Set(bestCombo.meldIndices);
+      ui.selectionOrder = [...bestCombo.tiles];
+      ui.message = '';
+      render();
+      return;
+    }
+
+    // 2. 現在の選択で既に役が成立している場合、役に絡まない牌 t の追加選択は不可
+    const curEv = evaluateSelection(
+      [...ui.selected],
+      [...ui.selectedMelds].map((i) => state!.melds[i]),
+      scoreCtx,
+    );
+    if (curEv.yaku.length > 0) {
+      ui.message = '役攻撃時は、役に絡まない牌は選択できません';
+      render();
+      return;
+    }
+
+    // 3. 役なし状態での枚数上限チェック（最大3枚まで）
+    if (ui.selected.size + ui.selectedMelds.size * 3 >= 3) {
+      ui.message = '役なし攻撃は3枚までしか選択できません';
+      render();
+      return;
+    }
+
+    ui.selected.add(t);
+    ui.selectionOrder.push(t);
     ui.message = '';
     render();
     return;
@@ -976,9 +956,29 @@ app.addEventListener('click', (e) => {
       return;
     }
     const i = Number(el.dataset.meld);
-    if (ui.selectedMelds.has(i)) ui.selectedMelds.delete(i);
-    else ui.selectedMelds.add(i);
-    ui.message = '';
+    if (ui.selectedMelds.has(i)) {
+      ui.selectedMelds.delete(i);
+      ui.message = '';
+      render();
+      return;
+    }
+
+    const scoreCtx = buildScoreContext(state);
+    const bestCombo = findBestYakuCombo(
+      state.hand,
+      state.melds,
+      scoreCtx,
+      ui.selected,
+      new Set([...ui.selectedMelds, i]),
+    );
+    if (bestCombo) {
+      ui.selected = new Set(bestCombo.tiles);
+      ui.selectedMelds = new Set(bestCombo.meldIndices);
+      ui.selectionOrder = [...bestCombo.tiles];
+      ui.message = '';
+    } else {
+      ui.message = 'キープしたカンは「2セット役以上」が成立するときのみ選択できます';
+    }
     render();
     return;
   }
@@ -1009,7 +1009,6 @@ app.addEventListener('click', (e) => {
       ui.searchMode = false;
       ui.searchPickedKind = null;
       ui.riichiSelectMode = true;
-      // 既に有効な捨て牌候補を1枚だけ選択していた場合はそのまま保持し、そうでなければクリアして手動選択させる
       if (currentSelected.length === 1 && validDiscards.includes(currentSelected[0])) {
         ui.selected = new Set([currentSelected[0]]);
         ui.selectionOrder = [currentSelected[0]];
@@ -1075,11 +1074,16 @@ app.addEventListener('click', (e) => {
       render();
       break;
     }
-    case 'select-all': {
+    case 'select-best-yaku': {
       if (isBusyAnimating()) break;
-      selectAllPlayableTiles(state);
-      ui.message = '';
-      render();
+      const best = findBestYakuCombo(state.hand, state.melds, buildScoreContext(state));
+      if (best) {
+        ui.selected = new Set(best.tiles);
+        ui.selectedMelds = new Set(best.meldIndices);
+        ui.selectionOrder = [...best.tiles];
+        ui.message = '';
+        render();
+      }
       break;
     }
     case 'clear':
@@ -1087,6 +1091,9 @@ app.addEventListener('click', (e) => {
       clearSelection();
       ui.message = '';
       render();
+      break;
+    case 'shop-buy-hp':
+      dispatch({ type: 'buy_shop_hp' });
       break;
     case 'shop-heal':
       dispatch({ type: 'buy_shop_heal' });

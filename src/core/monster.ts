@@ -3,7 +3,18 @@ import { Rng } from './rng';
 
 const BASIC_IDS: EnemySkillId[] = ['critical', 'seal_yaku', 'atk_down', 'charge', 'defend'];
 const STRONG_IDS: EnemySkillId[] = ['slow', 'seal_tiles', 'heal', 'double_strike', 'seal_equip', 'reflect'];
-const BOSS_IDS: EnemySkillId[] = ['half_hp', 'venom', 'triple_strike', 'break_hand_5', 'break_kan', 'break_all'];
+const BOSS_IDS: EnemySkillId[] = [
+  'titan_slam',
+  'blizzard_breath',
+  'hellfire_breath',
+  'cataclysm',
+  'half_hp',
+  'venom',
+  'triple_strike',
+  'break_hand_5',
+  'break_kan',
+  'break_all',
+];
 
 /** 状態異常系スキルの発生頻度を抑えるための重み付け（非状態異常=2、状態異常=1） */
 const STATUS_AILMENT_IDS: ReadonlySet<EnemySkillId> = new Set([
@@ -15,7 +26,7 @@ const STATUS_AILMENT_IDS: ReadonlySet<EnemySkillId> = new Set([
   'venom',
 ]);
 
-function pickWeightedSkill(pool: EnemySkillId[], rng: Rng): EnemySkillDef {
+function pickWeightedSkill(pool: readonly EnemySkillId[], rng: Rng): EnemySkillDef {
   const weights = pool.map((id) => (STATUS_AILMENT_IDS.has(id) ? 1 : 2));
   const idx = rng.weighted(weights);
   return ENEMY_SKILLS[pool[idx]];
@@ -38,8 +49,9 @@ export function chooseMonsterSkill(def: MonsterDef, rng: Rng, allowMultiStrike =
     const pool = allowMultiStrike ? STRONG_IDS : STRONG_IDS.filter((k) => k !== 'double_strike');
     return pickWeightedSkill(pool, rng);
   }
-  const pool = allowMultiStrike ? BOSS_IDS : BOSS_IDS.filter((k) => k !== 'triple_strike');
-  return pickWeightedSkill(pool, rng);
+  const baseBossPool = def.bossSkills && def.bossSkills.length > 0 ? def.bossSkills : BOSS_IDS;
+  const pool = allowMultiStrike ? baseBossPool : baseBossPool.filter((k) => k !== 'triple_strike');
+  return pickWeightedSkill(pool.length > 0 ? pool : baseBossPool, rng);
 }
 
 /** 基礎攻撃力から通常攻撃のダメージを算出（90%〜110%の乱数幅） */

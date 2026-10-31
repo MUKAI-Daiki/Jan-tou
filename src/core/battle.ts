@@ -8,8 +8,8 @@ import {
   getEquipmentSellPrice,
   getJobDef,
 } from '../data/equipments';
-import { ENEMY_SKILLS, MAX_STAGE, MONSTERS, MonsterDef, PLAYER_INITIAL_HP, expForNextLevel } from '../data/monsters';
-import { Mentsu, canDeclareRiichi, findRiichiDiscards, hasThreeSets } from './mentsu';
+import { ENEMY_SKILLS, MAX_STAGE, MONSTERS, MonsterDef, PLAYER_INITIAL_HP } from '../data/monsters';
+import { Decomposition, Mentsu, canDeclareRiichi, findRiichiDiscards, hasThreeSets, isSet } from './mentsu';
 import { chooseMonsterSkill, rollMonsterDamage } from './monster';
 import { Rng } from './rng';
 import { AttackEval, ScoreContext, effectiveTileMod, evaluateSelection } from './score';
@@ -36,10 +36,14 @@ import {
   suitName,
   suitOf,
 } from './tile';
-import { Yaku, calcYakuScore, isYakumanYaku } from './yaku';
+import { Yaku, calcYakuScore } from './yaku';
 
 /** 基本手牌枚数（3セット＝9枚分。カン1つにつき手牌枠は-3枚） */
 export const HAND_SIZE = 9;
+
+/** 商店での永続ステータス強化の価格 */
+export const SHOP_HP_UP_COST = 500;
+export const SHOP_ATK_UP_COST = 500;
 
 export interface LogEntry {
   side: 'player' | 'monster' | 'system';
@@ -63,7 +67,7 @@ export interface PlayerBuffs {
   pinfuTurns: number;
   /** 三暗刻：ダメージ3倍の残りターン */
   sanankouTurns: number;
-  /** 清老頭：補充が2〜8の数牌のみ＆30%金牌化の残りターン */
+  /** 清老頭：補充が2〜8の数牌のみ＆50%金牌化の残りターン */
   chinroutouTurns: number;
   /** 清一色：残り牌外から同種数牌が補充される残りターン */
   chiniisouTurns: number;
@@ -107,18 +111,14 @@ export interface BattleState {
   melds: Mentsu[];
   /** 直前の操作で補充された牌 */
   drawn: TileId[];
-  /** 牌ごとの特殊状態（金牌・赤牌・虹牌） */
+  /** 牌ごとの特殊状態（normal / gold / red / rainbow） */
   tileMods: Record<TileId, TileMod>;
   /** 牌封印の残りターン数 */
   sealedTiles: Record<TileId, number>;
   /** 永続的に残り牌0になった牌種 */
   banishedKinds: Kind[];
-  /** レベルアップボーナスによる牌種別の基礎攻撃力加算値 */
+  /** 役成立ボーナス・商店強化による牌種別の基礎攻撃力加算値 */
   bonusTileAtk: Record<TileGroup, number>;
-  /** 未選択のレベルアップボーナス回数 */
-  pendingLevelUps: number;
-  /** レベルアップボーナス選択完了後に敵ターンを実行するかどうか */
-  pendingMonsterTurn?: boolean;
   /** 所持している「銭」 */
   money: number;
   /** ゲーム終了時のスコアから獲得したボーナス銭 */
@@ -128,8 +128,6 @@ export interface BattleState {
   player: {
     hp: number;
     maxHp: number;
-    level: number;
-    exp: number;
   };
   /** 所持している装備ID一覧 */
   equipments: string[];
@@ -145,7 +143,7 @@ export interface BattleState {
   chain: number;
   /** 残りの追加攻撃（チェーン）ストック数 */
   extraChains: number;
-  /** 二色同順(2)・二色同刻(3)による次チェーン倍率 */
+  /** 二色同順(2.5)・二色同刻(3.5)による次チェーン倍率 */
   nextChainMult: number;
   /** リーチ宣言中かどうか */
   riichi: boolean;
@@ -153,10 +151,8 @@ export interface BattleState {
   riichiSwapsThisTurn: number;
   /** このバトルで発動した敗北回避回数 */
   revivedThisBattle: number;
-  /** 特殊行動「治療」がONかどうか */
+  /** 特殊行動「回復変換」がONかどうか */
   healMode: boolean;
-  /** このバトルの経験値倍率（三槓子で30倍） */
-  expMult: number;
   cooldowns: SkillCooldowns;
   buffs: PlayerBuffs;
   enemyBuffs: EnemyBuffs;
@@ -175,8 +171,8 @@ export interface BattleState {
 export interface ScoreBreakdown {
   stagesCleared: number;
   stageScore: number;
-  level: number;
-  levelScore: number;
+  permAtkTotal: number;
+  permScore: number;
   yakuCount: number;
   yakuScore: number;
   equipCount: number;
@@ -188,8 +184,9 @@ export interface ScoreBreakdown {
 export function calculateScore(s: BattleState): ScoreBreakdown {
   const stagesCleared = s.status === 'won' ? MAX_STAGE : Math.max(0, s.stage - 1);
   const stageScore = stagesCleared * 1000 + (s.status === 'won' ? 3000 : 0);
-  const level = s.player.level;
-  const levelScore = level * 300;
+  const groups: TileGroup[] = ['m', 'p', 's', 'wind', 'dragon'];
+  const permAtkTotal = groups.reduce((sum, g) => sum + (s.bonusTileAtk?.[g] ?? 0), 0);
+  const permScore = permAtkTotal * 50;
   const yakuHistory = s.yakuHistory ?? [];
   const yakuCount = yakuHistory.length;
   const yakuScore = yakuHistory.reduce((sum, y) => sum + calcYakuScore(y), 0);
@@ -198,13 +195,13 @@ export function calculateScore(s: BattleState): ScoreBreakdown {
     const eq = getEquipment(id);
     return sum + (RARITY_SCORE[eq.rarity] ?? 200);
   }, 0);
-  const totalScore = stageScore + levelScore + yakuScore + equipScore;
-  const bonusMoneyFromScore = Math.max(10, Math.floor(totalScore / 20));
+  const totalScore = stageScore + permScore + yakuScore + equipScore;
+  const bonusMoneyFromScore = Math.max(20, Math.floor(totalScore / 10));
   return {
     stagesCleared,
     stageScore,
-    level,
-    levelScore,
+    permAtkTotal,
+    permScore,
     yakuCount,
     yakuScore,
     equipCount,
@@ -223,12 +220,6 @@ function gainMoney(s: BattleState, amount: number, reason: string): void {
   });
 }
 
-export type LevelUpBonusChoice =
-  | { type: 'hp_100' }
-  | { type: 'hp_20' }
-  | { type: 'tile_atk_2'; group: TileGroup }
-  | { type: 'banish_kind'; kind: Kind };
-
 export type Action =
   | { type: 'attack'; tiles: TileId[]; melds: number[] }
   | { type: 'guard'; tiles: TileId[]; melds: number[] }
@@ -241,10 +232,11 @@ export type Action =
   | { type: 'skill_copy'; targetTile: TileId; sourceTile: TileId }
   | { type: 'skill_search'; targetTile: TileId; kind: Kind }
   | { type: 'choose_reward'; equipId: string }
-  | { type: 'choose_level_bonus'; bonus: LevelUpBonusChoice }
   | { type: 'buy_shop_item'; equipId: string }
   | { type: 'sell_equip'; equipIndex: number }
   | { type: 'buy_shop_heal' }
+  | { type: 'buy_shop_hp' }
+  | { type: 'buy_shop_atk'; group: TileGroup }
   | { type: 'leave_shop' };
 
 export interface MonsterTurnStep {
@@ -304,7 +296,6 @@ export function hasAnyPlayerDebuff(s: BattleState): boolean {
 export function buildScoreContext(s: BattleState): ScoreContext {
   return {
     job: s.job,
-    level: s.player.level,
     chain: s.chain,
     nextChainMult: s.nextChainMult,
     tileMods: s.tileMods,
@@ -345,6 +336,7 @@ function resetWallFull(s: BattleState): void {
   const hasRedOne = countActiveEquip(s, 'red_five_1') > 0;
   const hasRedAll = countActiveEquip(s, 'all_five_red') > 0;
   for (const t of s.wall) {
+    delete s.tileMods[t];
     const k = kindOf(t);
     if (isFive(k) && (hasRedAll || (hasRedOne && (t & 3) === 0))) {
       s.tileMods[t] = 'red';
@@ -356,8 +348,9 @@ function decorateDrawnTile(
   s: BattleState,
   rng: Rng,
   tile: TileId,
-  opts: { forceGold?: boolean; riichiGold30?: boolean; ignoreEffects?: boolean } = {},
+  opts: { forceGold?: boolean; riichiGold50?: boolean; ignoreEffects?: boolean } = {},
 ): void {
+  delete s.tileMods[tile];
   if (opts.ignoreEffects) return;
   const k = kindOf(tile);
   const equips = getActiveEquips(s);
@@ -382,9 +375,9 @@ function decorateDrawnTile(
 
   // 金牌判定
   let isGold = Boolean(opts.forceGold || s.tileMods[tile] === 'gold' || s.tileMods[tile] === 'red');
-  if (!isGold && opts.riichiGold30 && rng.int(100) < 30) isGold = true;
+  if (!isGold && opts.riichiGold50 && rng.int(100) < 50) isGold = true;
   if (!isGold && s.buffs.honiisouTurns > 0 && isHonor(k)) isGold = true;
-  if (!isGold && s.buffs.chinroutouTurns > 0 && rng.int(100) < 30) isGold = true;
+  if (!isGold && s.buffs.chinroutouTurns > 0 && rng.int(100) < 50) isGold = true;
   if (!isGold && isHonor(k) && equips.includes('all_honor_gold')) isGold = true;
   if (!isGold && isDragon(k) && equips.includes('dragon_gold')) isGold = true;
 
@@ -411,7 +404,7 @@ function decorateDrawnTile(
 function drawOne(
   s: BattleState,
   rng: Rng,
-  opts: { forceGold?: boolean; riichiGold30?: boolean; forceKind?: Kind; ignoreEffects?: boolean } = {},
+  opts: { forceGold?: boolean; riichiGold50?: boolean; forceKind?: Kind; ignoreEffects?: boolean } = {},
 ): TileId {
   enforceWallRestrictions(s);
 
@@ -501,37 +494,293 @@ function drawN(
   return out;
 }
 
-function gainExp(s: BattleState, rawAmount: number): void {
-  if (rawAmount <= 0) return;
-  const amount = Math.round(rawAmount * s.expMult);
-  s.player.exp += amount;
-  const bannerCount = countActiveEquip(s, 'banner_heal_20');
-  while (s.player.exp >= expForNextLevel(s.player.level)) {
-    s.player.exp -= expForNextLevel(s.player.level);
-    s.player.level++;
-    s.pendingLevelUps++;
-    if (bannerCount > 0) {
-      const heal = Math.max(1, Math.round(s.player.maxHp * 0.2 * bannerCount));
-      s.player.hp = Math.min(s.player.maxHp, s.player.hp + heal);
-      s.events.push({ type: 'heal', target: 'player', amount: heal });
-    }
+function kindToGroup(k: Kind): TileGroup {
+  const st = suitOf(k);
+  if (st === 'm' || st === 'p' || st === 's') return st;
+  return isWind(k) ? 'wind' : 'dragon';
+}
+
+function addPermanentMaxHp(s: BattleState, amount: number): void {
+  if (amount <= 0) return;
+  s.player.maxHp += amount;
+  s.player.hp += amount;
+  s.events.push({ type: 'heal', target: 'player', amount });
+}
+
+function addPermanentGroupAtk(s: BattleState, groups: readonly TileGroup[], amount: number): void {
+  if (amount <= 0) return;
+  for (const g of groups) {
+    s.bonusTileAtk[g] = (s.bonusTileAtk[g] ?? 0) + amount;
   }
 }
 
-function applyLevelUpDirect(s: BattleState, levels: number): void {
-  const bannerCount = countActiveEquip(s, 'banner_heal_20');
-  let totalHeal = 0;
-  for (let i = 0; i < levels; i++) {
-    s.player.level++;
-    s.pendingLevelUps++;
-    if (bannerCount > 0) {
-      const heal = Math.max(1, Math.round(s.player.maxHp * 0.2 * bannerCount));
-      s.player.hp = Math.min(s.player.maxHp, s.player.hp + heal);
-      totalHeal += heal;
+/**
+ * 役成立時の「役に合う永続強化」を適用する
+ */
+function applyYakuPermanentBonus(s: BattleState, y: Yaku, d: Decomposition): void {
+  switch (y.id) {
+    case 'haku': {
+      addPermanentMaxHp(s, 15);
+      addPermanentGroupAtk(s, ['dragon'], 2);
+      s.log.push({
+        side: 'system',
+        text: '🌟【白セット永続強化】最大HP+15 ＆ 三元牌の基礎攻撃力+2！',
+      });
+      break;
     }
-  }
-  if (totalHeal > 0) {
-    s.events.push({ type: 'heal', target: 'player', amount: totalHeal });
+    case 'hatsu': {
+      addPermanentGroupAtk(s, ['s', 'dragon'], 2);
+      s.log.push({
+        side: 'system',
+        text: '🌟【發セット永続強化】索子・三元牌の基礎攻撃力+2！',
+      });
+      break;
+    }
+    case 'chun': {
+      addPermanentGroupAtk(s, ['dragon'], 4);
+      s.log.push({
+        side: 'system',
+        text: '🌟【中セット永続強化】三元牌の基礎攻撃力+4！',
+      });
+      break;
+    }
+    case 'riichi': {
+      addPermanentGroupAtk(s, ['m', 'p', 's'], 2);
+      addPermanentMaxHp(s, 20);
+      s.log.push({
+        side: 'system',
+        text: '🌟【リーチ永続強化】全数牌（萬・筒・索）の基礎攻撃力+2 ＆ 最大HP+20！',
+      });
+      break;
+    }
+    case 'wind_27':
+    case 'wind_28':
+    case 'wind_29':
+    case 'wind_30': {
+      addPermanentGroupAtk(s, ['wind'], 3);
+      addPermanentMaxHp(s, 10);
+      s.log.push({
+        side: 'system',
+        text: `🌟【${y.name}永続強化】風牌の基礎攻撃力+3 ＆ 最大HP+10！`,
+      });
+      break;
+    }
+    case 'tanyao': {
+      const suits = [
+        ...new Set(
+          d.sets
+            .map((m) => suitOf(m.kind))
+            .filter((st): st is 'm' | 'p' | 's' => st === 'm' || st === 'p' || st === 's'),
+        ),
+      ];
+      const targets: TileGroup[] = suits.length > 0 ? suits : ['m', 'p', 's'];
+      addPermanentGroupAtk(s, targets, 2);
+      s.log.push({
+        side: 'system',
+        text: `🌟【タンヤオ永続強化】${targets.map((g) => TILE_GROUP_LABEL[g]).join('・')}の基礎攻撃力+2！`,
+      });
+      break;
+    }
+    case 'iipeikou': {
+      const shuntsu = d.sets.filter((m) => m.type === 'shuntsu');
+      const suits = [
+        ...new Set(
+          shuntsu
+            .filter((m, i) => shuntsu.some((o, j) => i !== j && o.kind === m.kind))
+            .map((m) => suitOf(m.kind))
+            .filter((st): st is 'm' | 'p' | 's' => st === 'm' || st === 'p' || st === 's'),
+        ),
+      ];
+      const targets: TileGroup[] = suits.length > 0 ? suits : ['m'];
+      addPermanentGroupAtk(s, targets, 4);
+      s.log.push({
+        side: 'system',
+        text: `🌟【一盃口永続強化】${targets.map((g) => TILE_GROUP_LABEL[g]).join('・')}の基礎攻撃力+4！`,
+      });
+      break;
+    }
+    case 'nishoku_doujun': {
+      const shuntsu = d.sets.filter((m) => m.type === 'shuntsu');
+      const suits = [
+        ...new Set(
+          shuntsu
+            .filter((a, i) =>
+              shuntsu.some((b, j) => i !== j && numOf(a.kind) === numOf(b.kind) && suitOf(a.kind) !== suitOf(b.kind)),
+            )
+            .map((m) => suitOf(m.kind))
+            .filter((st): st is 'm' | 'p' | 's' => st === 'm' || st === 'p' || st === 's'),
+        ),
+      ];
+      const targets: TileGroup[] = suits.length > 0 ? suits : ['m', 'p'];
+      addPermanentGroupAtk(s, targets, 3);
+      s.log.push({
+        side: 'system',
+        text: `🌟【二色同順永続強化】${targets.map((g) => TILE_GROUP_LABEL[g]).join('・')}の基礎攻撃力+3！`,
+      });
+      break;
+    }
+    case 'nishoku_doukou': {
+      const numSets = d.sets.filter((m) => isSet(m) && !isHonor(m.kind));
+      const suits = [
+        ...new Set(
+          numSets
+            .filter((a, i) =>
+              numSets.some((b, j) => i !== j && numOf(a.kind) === numOf(b.kind) && suitOf(a.kind) !== suitOf(b.kind)),
+            )
+            .map((m) => suitOf(m.kind))
+            .filter((st): st is 'm' | 'p' | 's' => st === 'm' || st === 'p' || st === 's'),
+        ),
+      ];
+      const targets: TileGroup[] = suits.length > 0 ? suits : ['m', 'p'];
+      addPermanentGroupAtk(s, targets, 4);
+      s.log.push({
+        side: 'system',
+        text: `🌟【二色同刻永続強化】${targets.map((g) => TILE_GROUP_LABEL[g]).join('・')}の基礎攻撃力+4！`,
+      });
+      break;
+    }
+    case 'niankou': {
+      const groups = [...new Set(d.sets.filter(isSet).map((m) => kindToGroup(m.kind)))];
+      const targets: TileGroup[] = groups.length > 0 ? groups : ['m'];
+      addPermanentGroupAtk(s, targets, 2);
+      s.log.push({
+        side: 'system',
+        text: `🌟【二暗刻永続強化】${targets.map((g) => TILE_GROUP_LABEL[g]).join('・')}の基礎攻撃力+2！`,
+      });
+      break;
+    }
+    case 'chanta': {
+      addPermanentGroupAtk(s, ['wind', 'dragon'], 3);
+      addPermanentMaxHp(s, 25);
+      s.log.push({
+        side: 'system',
+        text: '🌟【チャンタ永続強化】風牌・三元牌の基礎攻撃力+3 ＆ 最大HP+25！',
+      });
+      break;
+    }
+    case 'four_pairs': {
+      addPermanentGroupAtk(s, ['m', 'p', 's', 'wind', 'dragon'], 2);
+      addPermanentMaxHp(s, 30);
+      s.log.push({
+        side: 'system',
+        text: '🌟【四対子永続強化】全牌種の基礎攻撃力+2 ＆ 最大HP+30！',
+      });
+      break;
+    }
+    case 'honiisou': {
+      const numKind = d.sets
+        .flatMap((m) => m.tiles)
+        .map(kindOf)
+        .find((k) => !isHonor(k));
+      const numGrp: TileGroup = numKind !== undefined ? (suitOf(numKind) as TileGroup) : 'm';
+      addPermanentGroupAtk(s, [numGrp, 'wind', 'dragon'], 4);
+      s.log.push({
+        side: 'system',
+        text: `🌟【混一色永続強化】${TILE_GROUP_LABEL[numGrp]}・風牌・三元牌の基礎攻撃力+4！`,
+      });
+      break;
+    }
+    case 'pinfu': {
+      addPermanentMaxHp(s, 50);
+      const suits = [
+        ...new Set(
+          d.sets
+            .map((m) => suitOf(m.kind))
+            .filter((st): st is 'm' | 'p' | 's' => st === 'm' || st === 'p' || st === 's'),
+        ),
+      ];
+      const targets: TileGroup[] = suits.length > 0 ? suits : ['m', 'p', 's'];
+      addPermanentGroupAtk(s, targets, 3);
+      s.log.push({
+        side: 'system',
+        text: `🌟【平和永続強化】最大HP+50 ＆ ${targets.map((g) => TILE_GROUP_LABEL[g]).join('・')}の基礎攻撃力+3！`,
+      });
+      break;
+    }
+    case 'sanankou': {
+      addPermanentGroupAtk(s, ['m', 'p', 's', 'wind', 'dragon'], 3);
+      s.log.push({
+        side: 'system',
+        text: '🌟【三暗刻永続強化】全牌種の基礎攻撃力+3！',
+      });
+      break;
+    }
+    case 'chinroutou': {
+      addPermanentGroupAtk(s, ['m', 'p', 's'], 5);
+      addPermanentMaxHp(s, 50);
+      s.log.push({
+        side: 'system',
+        text: '🌟【清老頭永続強化】全数牌（萬・筒・索）の基礎攻撃力+5 ＆ 最大HP+50！',
+      });
+      break;
+    }
+    case 'chiniisou': {
+      const st = (y.suit ?? 'p') as TileGroup;
+      addPermanentGroupAtk(s, [st], 8);
+      s.log.push({
+        side: 'system',
+        text: `🌟【清一色永続強化】${TILE_GROUP_LABEL[st]}の基礎攻撃力+8！`,
+      });
+      break;
+    }
+    case 'daisangen': {
+      addPermanentGroupAtk(s, ['dragon'], 15);
+      addPermanentMaxHp(s, 100);
+      s.log.push({
+        side: 'system',
+        text: '🌟【大三元永続強化】三元牌の基礎攻撃力+15 ＆ 最大HP+100！',
+      });
+      break;
+    }
+    case 'ryuuiisou': {
+      addPermanentGroupAtk(s, ['s', 'dragon'], 12);
+      addPermanentMaxHp(s, 150);
+      s.log.push({
+        side: 'system',
+        text: '🌟【緑一色永続強化】索子・三元牌の基礎攻撃力+12 ＆ 最大HP+150！',
+      });
+      break;
+    }
+    case 'tsuuiisou': {
+      addPermanentGroupAtk(s, ['wind', 'dragon'], 15);
+      addPermanentMaxHp(s, 150);
+      s.log.push({
+        side: 'system',
+        text: '🌟【字一色永続強化】風牌・三元牌の基礎攻撃力+15 ＆ 最大HP+150！',
+      });
+      break;
+    }
+    case 'sankantsu': {
+      addPermanentGroupAtk(s, ['m', 'p', 's', 'wind', 'dragon'], 10);
+      addPermanentMaxHp(s, 150);
+      s.log.push({
+        side: 'system',
+        text: '🌟【三槓子永続強化】全牌種の基礎攻撃力+10 ＆ 最大HP+150！',
+      });
+      break;
+    }
+    case 'neko_punch': {
+      for (const p of d.pairs) {
+        const grp = kindToGroup(p.kind);
+        s.bonusTileAtk[grp] = (s.bonusTileAtk[grp] ?? 0) + 1;
+      }
+      s.log.push({
+        side: 'system',
+        text: `🌟【ねこぱんち永続強化】ペア牌種の基礎攻撃力+${d.pairs.length}！`,
+      });
+      break;
+    }
+    case 'tsuyotsuyo': {
+      const groups = [...new Set(d.sets.map((m) => kindToGroup(m.kind)))];
+      const targets: TileGroup[] = groups.length > 0 ? groups : ['m'];
+      addPermanentGroupAtk(s, targets, 2);
+      addPermanentMaxHp(s, 10);
+      s.log.push({
+        side: 'system',
+        text: `🌟【つよつよこうげき永続強化】${targets.map((g) => TILE_GROUP_LABEL[g]).join('・')}の基礎攻撃力+2 ＆ 最大HP+10！`,
+      });
+      break;
+    }
   }
 }
 
@@ -718,12 +967,10 @@ function executeSingleMonsterAction(
   // リーチ時のダメージ半減は「雀老師（master）」のみ発動
   const riichiCutMult = s.riichi && s.job === 'master' ? 0.5 : 1;
 
-  const dealDamageToPlayer = (rawDmg: number, label: string) => {
-    const declareText = `${def.name}の「${label}」！`;
+  const applyMonsterDamage = (rawDmg: number): string => {
     if (s.buffs.nullifyDamage) {
       s.buffs.nullifyDamage = false;
-      recordMonsterStep(s, steps, declareText, '→ 白セットの障壁がダメージを無効化した！');
-      return;
+      return '→ 白セットの障壁がダメージを無効化した！';
     }
     let dmg = Math.max(1, Math.round(rawDmg * chargeMult * dmgCutMult * riichiCutMult));
     let guardNote = '';
@@ -738,8 +985,13 @@ function executeSingleMonsterAction(
       s.events.push({ type: 'damage', target: 'player', amount: dmg });
     }
     const riichiNote = s.riichi && s.job === 'master' ? '（雀老師リーチ中半減）' : '';
-    const effectText = `→ ${dmg.toLocaleString()} ダメージ${riichiNote}${guardNote}`;
     checkPlayerDefeatOrRevive(s);
+    return `→ ${dmg.toLocaleString()} ダメージ${riichiNote}${guardNote}`;
+  };
+
+  const dealDamageToPlayer = (rawDmg: number, label: string) => {
+    const declareText = `${def.name}の「${label}」！`;
+    const effectText = applyMonsterDamage(rawDmg);
     recordMonsterStep(s, steps, declareText, effectText);
   };
 
@@ -931,6 +1183,82 @@ function executeSingleMonsterAction(
       );
       break;
     }
+    // ---- 新設：ボス固有の特殊行動 ----
+    case 'titan_slam': {
+      // 巨体で突き飛ばす：2倍ダメージ + ランダムで手牌2つを強制交換
+      const declareText = `${def.name}の「巨体で突き飛ばす」！`;
+      const dmgText = applyMonsterDamage(rollMonsterDamage(def.atk, rng) * 2);
+      const n = Math.min(2, s.hand.length);
+      for (let i = 0; i < n; i++) {
+        const idx = rng.int(s.hand.length);
+        const [removed] = s.hand.splice(idx, 1);
+        delete s.sealedTiles[removed];
+      }
+      s.drawn = [];
+      drawN(s, rng, n, { ignoreEffects: true });
+      const riichiBreakNote = n > 0 ? forceCancelRiichiNoPenalty(s) : '';
+      recordMonsterStep(
+        s,
+        steps,
+        declareText,
+        `${dmgText} ＋ 手牌${n}枚が強制交換された！${riichiBreakNote}`,
+      );
+      break;
+    }
+    case 'blizzard_breath': {
+      // 吹雪の息：1.5倍ダメージ + ランダムで手牌3つを使用不能（2ターン）
+      const declareText = `${def.name}の「吹雪の息」！`;
+      const dmgText = applyMonsterDamage(Math.round(rollMonsterDamage(def.atk, rng) * 1.5));
+      const count = Math.min(3, s.hand.length);
+      const pool = [...s.hand];
+      for (let i = 0; i < count; i++) {
+        const idx = rng.int(pool.length);
+        const t = pool[idx];
+        pool.splice(idx, 1);
+        s.sealedTiles[t] = (s.sealedTiles[t] ?? 0) + 2;
+      }
+      const riichiBreakNote = count > 0 ? forceCancelRiichiNoPenalty(s) : '';
+      recordMonsterStep(
+        s,
+        steps,
+        declareText,
+        `${dmgText} ＋ 手牌${count}枚が2ターン使用不能（凍結封印）になった！${riichiBreakNote}`,
+      );
+      break;
+    }
+    case 'hellfire_breath': {
+      // 業火の息：1.5倍ダメージ + 金牌等の強化牌をすべて通常牌に
+      const declareText = `${def.name}の「業火の息」！`;
+      const dmgText = applyMonsterDamage(Math.round(rollMonsterDamage(def.atk, rng) * 1.5));
+      for (const t of [...s.hand, ...s.melds.flatMap((m) => m.tiles)]) {
+        s.tileMods[t] = 'normal';
+      }
+      recordMonsterStep(
+        s,
+        steps,
+        declareText,
+        `${dmgText} ＋ 手牌の強化牌（金・赤・虹）がすべて通常牌に戻された！`,
+      );
+      break;
+    }
+    case 'cataclysm': {
+      // 天災：2.5倍ダメージ + 全牌強制交換
+      const declareText = `${def.name}の「天災」！`;
+      const dmgText = applyMonsterDamage(Math.round(rollMonsterDamage(def.atk, rng) * 2.5));
+      const targetCount = Math.max(1, HAND_SIZE - s.melds.length * 3);
+      s.hand = [];
+      s.sealedTiles = {};
+      s.drawn = [];
+      drawN(s, rng, targetCount, { ignoreEffects: true });
+      const riichiBreakNote = forceCancelRiichiNoPenalty(s);
+      recordMonsterStep(
+        s,
+        steps,
+        declareText,
+        `${dmgText} ＋ 全手牌が強制交換された！${riichiBreakNote}`,
+      );
+      break;
+    }
   }
 }
 
@@ -968,9 +1296,9 @@ function endPlayerTurnAndAdvance(s: BattleState, rng: Rng, steps: MonsterTurnSte
   s.cooldowns.copy = dec(s.cooldowns.copy);
   s.cooldowns.search = dec(s.cooldowns.search);
 
-  // 毎ターン回復（平和バフ10% ＋ 装備「再生の牌皿」5%×所持数）
+  // 毎ターン回復（平和バフ15% ＋ 装備「再生の牌皿」5%×所持数）
   const regenEquipCount = countActiveEquip(s, 'regen_5');
-  const pinfuRate = s.buffs.pinfuTurns > 0 ? 0.1 : 0;
+  const pinfuRate = s.buffs.pinfuTurns > 0 ? 0.15 : 0;
   const totalRegenRate = pinfuRate + regenEquipCount * 0.05;
   if (totalRegenRate > 0 && s.player.hp < s.player.maxHp) {
     const heal = Math.max(1, Math.round(s.player.maxHp * totalRegenRate));
@@ -989,7 +1317,7 @@ function endPlayerTurnAndAdvance(s: BattleState, rng: Rng, steps: MonsterTurnSte
 
 function handleMonsterDefeated(s: BattleState, rng: Rng): void {
   s.log.push({ side: 'system', text: `${s.monster.def.name}を倒した！` });
-  const killMoney = s.stage * 50;
+  const killMoney = s.stage * 100;
   gainMoney(s, killMoney, '敵撃破報酬');
   if (s.stage >= MAX_STAGE) {
     s.status = 'won';
@@ -1038,7 +1366,7 @@ function openShop(s: BattleState, rng: Rng): void {
   s.status = 'shop';
   s.log.push({
     side: 'system',
-    text: '🏮 3試合終了！ 商店に到着しました（銭を使って装備購入・売却・HP回復が可能）',
+    text: '🏮 3試合終了！ 商店に到着しました（銭を使ってステータス永続強化・装備購入・売却・HP回復が可能）',
   });
 }
 
@@ -1057,13 +1385,11 @@ function advanceToNextStage(s: BattleState, rng: Rng): void {
   s.riichiSwapsThisTurn = 0;
   s.revivedThisBattle = 0;
   s.healMode = false;
-  s.expMult = 1;
   s.buffs.guardBarrier = 0;
   s.enemyBuffs = { charged: false, defendTurns: 0, reflectTurns: 0 };
   s.rewardChoices = [];
   s.shopItems = [];
   s.shopHealUsed = false;
-  s.pendingMonsterTurn = false;
   s.status = 'playing';
 
   ensureStartDragonSet(s, rng);
@@ -1099,16 +1425,12 @@ export function newBattle(
     sealedTiles: {},
     banishedKinds: [],
     bonusTileAtk: { m: 0, p: 0, s: 0, wind: 0, dragon: 0 },
-    pendingLevelUps: 0,
-    pendingMonsterTurn: false,
     money: 0,
     scoreBonusMoney: 0,
     yakuHistory: [],
     player: {
       hp: PLAYER_INITIAL_HP,
       maxHp: PLAYER_INITIAL_HP,
-      level: 0,
-      exp: 0,
     },
     equipments: [],
     sealedEquipIndices: [],
@@ -1125,7 +1447,6 @@ export function newBattle(
     riichiSwapsThisTurn: 0,
     revivedThisBattle: 0,
     healMode: false,
-    expMult: 1,
     cooldowns: { resetWall: 0, copy: 0, search: 0 },
     buffs: {
       nullifyDamage: false,
@@ -1174,45 +1495,6 @@ export function step(prev: BattleState, action: Action): StepResult {
   const rng = new Rng(s.rng);
   const fail = (error: string): StepResult => ({ state: prev, error });
 
-  // レベルアップボーナス選択処理
-  if (action.type === 'choose_level_bonus') {
-    if (s.pendingLevelUps <= 0) return fail('選択可能なレベルアップボーナスがありません');
-    const b = action.bonus;
-    if (b.type === 'hp_100' || b.type === 'hp_20') {
-      s.player.maxHp += 100;
-      s.player.hp += 100;
-      s.events.push({ type: 'heal', target: 'player', amount: 100 });
-    } else if (b.type === 'tile_atk_2') {
-      s.bonusTileAtk[b.group] = (s.bonusTileAtk[b.group] ?? 0) + 2;
-    } else if (b.type === 'banish_kind') {
-      if (isKindBanished(s, b.kind)) return fail('その牌はすでに残り牌0になっています');
-      s.banishedKinds.push(b.kind);
-      enforceWallRestrictions(s);
-    }
-    s.pendingLevelUps--;
-
-    // レベルアップボーナスをすべて選び終えた後、保留されていた敵ターンがあれば実行する
-    if (s.pendingLevelUps === 0 && s.pendingMonsterTurn) {
-      s.pendingMonsterTurn = false;
-      const afterPlayerState = structuredClone(s);
-      const playerEvents = [...s.events];
-      s.events = [];
-      const monsterTurnSteps: MonsterTurnStep[] = [];
-      endPlayerTurnAndAdvance(s, rng, monsterTurnSteps);
-      s.rng = rng.state;
-      return {
-        state: s,
-        afterPlayerState,
-        playerEvents,
-        playerLogs: [],
-        monsterTurnSteps,
-      };
-    }
-
-    s.rng = rng.state;
-    return { state: s };
-  }
-
   // 報酬選択画面での処理
   if (action.type === 'choose_reward') {
     if (s.status !== 'reward') return fail('現在は報酬選択中ではありません');
@@ -1246,6 +1528,37 @@ export function step(prev: BattleState, action: Action): StepResult {
       text: `🛒【商店】${price.toLocaleString()}銭を支払い、「${eq.name}」を購入した！（残り ${s.money.toLocaleString()}銭）`,
     });
     grantEquipment(s, action.equipId, rng);
+    s.rng = rng.state;
+    return { state: s };
+  }
+
+  if (action.type === 'buy_shop_hp') {
+    if (s.status !== 'shop') return fail('現在は商店にいません');
+    if (s.money < SHOP_HP_UP_COST) {
+      return fail(`銭が足りません（必要: ${SHOP_HP_UP_COST.toLocaleString()}銭）`);
+    }
+    s.money -= SHOP_HP_UP_COST;
+    addPermanentMaxHp(s, 100);
+    s.log.push({
+      side: 'system',
+      text: `💪【商店強化】${SHOP_HP_UP_COST.toLocaleString()}銭を支払い、最大HP＋100（現在HPも+100）に強化した！（残り ${s.money.toLocaleString()}銭）`,
+    });
+    s.rng = rng.state;
+    return { state: s };
+  }
+
+  if (action.type === 'buy_shop_atk') {
+    if (s.status !== 'shop') return fail('現在は商店にいません');
+    if (s.money < SHOP_ATK_UP_COST) {
+      return fail(`銭が足りません（必要: ${SHOP_ATK_UP_COST.toLocaleString()}銭）`);
+    }
+    const g = action.group;
+    s.money -= SHOP_ATK_UP_COST;
+    s.bonusTileAtk[g] = (s.bonusTileAtk[g] ?? 0) + 2;
+    s.log.push({
+      side: 'system',
+      text: `⚔️【商店強化】${SHOP_ATK_UP_COST.toLocaleString()}銭を支払い、${TILE_GROUP_LABEL[g]}の基礎攻撃力＋2（合計+${s.bonusTileAtk[g]}）に強化した！（残り ${s.money.toLocaleString()}銭）`,
+    });
     s.rng = rng.state;
     return { state: s };
   }
@@ -1413,6 +1726,7 @@ export function step(prev: BattleState, action: Action): StepResult {
       const melds = meldIdx.map((i) => s.melds[i]);
       const ctx = buildScoreContext(s);
       const ev = evaluateSelection(tiles, melds, ctx);
+      if (!ev.valid) return fail(ev.reason ?? 'ガードできません');
       const guardAmount = Math.max(1, Math.round(ev.baseAttack));
 
       const prevLogLen = s.log.length;
@@ -1574,15 +1888,9 @@ export function step(prev: BattleState, action: Action): StepResult {
       if (!ev.valid) return fail(ev.reason ?? '攻撃できません');
 
       const prevLogLen = s.log.length;
-      const yakuIds = new Set(ev.yaku.map((y) => y.id));
 
       // リーチ中の1枚ツモ切りかどうか
       const isRiichiTsumogiri = s.riichi && !ev.isRiichiComplete;
-
-      // 三槓子：このバトルの経験値30倍（ダメージ経験値が入る前に適用）
-      if (yakuIds.has('sankantsu')) {
-        s.expMult = 30;
-      }
 
       // 成立した役をスコア履歴に記録
       if (ev.yaku.length > 0) {
@@ -1610,7 +1918,6 @@ export function step(prev: BattleState, action: Action): StepResult {
           side: 'player',
           text: `攻撃！${chainLabel}${setMultLabel} ${yakuText} → ${ev.damage.toLocaleString()} ダメージ`,
         });
-        gainExp(s, ev.damage);
 
         // レア装備「吸血の雀卓」：役なしおよび1セット役の攻撃時、与えたダメージ分自分を回復
         const isBasicOrTier1 = ev.yaku.length === 0 || ev.yaku.every((y) => y.tier === 1);
@@ -1661,28 +1968,32 @@ export function step(prev: BattleState, action: Action): StepResult {
         });
       }
 
-      // セット内に組み込まれた金牌・赤牌・虹牌の銭獲得
+      // セット内に組み込まれた金牌・赤牌・虹牌の銭獲得（従来の2倍：金30・赤50・虹100銭）
       const pureGoldCount = Math.max(0, ev.goldCount - ev.redCount);
       const specialTileMoney =
-        pureGoldCount * 15 + ev.redCount * 25 + ev.usedRainbowCount * 50;
+        pureGoldCount * 30 + ev.redCount * 50 + ev.usedRainbowCount * 100;
       if (specialTileMoney > 0) {
         gainMoney(s, specialTileMoney, 'セット内の金/赤/虹牌使用');
       }
 
-      // 役成立ボーナス経験値（1セット役・リーチ < 2セット役 < 3セット役 < 役満相当役）
-      if (ev.yakuExp > 0) {
-        const gainedYakuExp = Math.round(ev.yakuExp * s.expMult);
-        s.log.push({
-          side: 'system',
-          text: `【役成立ボーナス】${yakuText} により経験値 +${gainedYakuExp.toLocaleString()} を獲得！`,
-        });
-        gainExp(s, ev.yakuExp);
+      // 役成立ボーナス銭（従来の2倍強化）
+      if (ev.yakuMoney > 0) {
+        gainMoney(s, ev.yakuMoney, `${yakuText}成立報酬`);
       }
 
-      // 装備「招財の算盤（unlock_tanyao）」：役成立のたび1役につき+30銭
+      // 装備「招財の算盤（unlock_tanyao）」：役成立のたび1役につき+60銭（従来の2倍）
       const abacusCount = countActiveEquip(s, 'unlock_tanyao');
       if (abacusCount > 0 && ev.yaku.length > 0) {
-        gainMoney(s, 30 * ev.yaku.length * abacusCount, '招財の算盤');
+        gainMoney(s, 60 * ev.yaku.length * abacusCount, '招財の算盤');
+      }
+
+      // 装備「癒しの戦旗（banner_heal_20）」：役成立時、HPを20%回復
+      const bannerCount = countActiveEquip(s, 'banner_heal_20');
+      if (bannerCount > 0 && ev.yaku.length > 0) {
+        const heal = Math.max(1, Math.round(s.player.maxHp * 0.2 * bannerCount));
+        s.player.hp = Math.min(s.player.maxHp, s.player.hp + heal);
+        s.events.push({ type: 'heal', target: 'player', amount: heal });
+        s.log.push({ side: 'system', text: `【癒しの戦旗】役成立によりHPが ${heal.toLocaleString()} 回復した！` });
       }
 
       // 赤牌をセット内に組み込んで攻撃に使用した場合、同じ種類の牌の基礎攻撃力+5（永続）
@@ -1691,10 +2002,7 @@ export function step(prev: BattleState, action: Action): StepResult {
         const setTiles: TileId[] = ev.decomp.sets.flatMap((m) => m.tiles);
         for (const t of setTiles) {
           if (effectiveTileMod(t, s.tileMods, activeEquipsNow) === 'red') {
-            const k = kindOf(t);
-            const st = suitOf(k);
-            const grp: TileGroup =
-              st === 'm' ? 'm' : st === 'p' ? 'p' : st === 's' ? 's' : isWind(k) ? 'wind' : 'dragon';
+            const grp = kindToGroup(kindOf(t));
             s.bonusTileAtk[grp] = (s.bonusTileAtk[grp] ?? 0) + 5;
             s.log.push({
               side: 'system',
@@ -1704,38 +2012,46 @@ export function step(prev: BattleState, action: Action): StepResult {
         }
       }
 
-      // 役の効果適用（継続バフが重複した場合は残り継続ターン数を加算）
+      // 役の効果＆役に合う永続強化の適用（継続バフが重複した場合は残り継続ターン数を加算）
       let nextMult = 1;
       let forceGoldDrawCount = 0;
       let drawThreePairs = false;
       let drawTriple = false;
       let chantaGold = false;
+      let sankantsuRainbowHand = false;
 
       for (const y of ev.yaku) {
-        if (isYakumanYaku(y.id)) {
-          gainMoney(s, 500, `${y.name}祝儀`);
-        }
+        applyYakuPermanentBonus(s, y, ev.decomp);
+
         switch (y.id) {
-          case 'haku':
+          case 'haku': {
             s.buffs.nullifyDamage = true;
-            s.log.push({ side: 'system', text: '【白セット効果】次の敵のダメージを無効化する障壁を展開！' });
+            const hakuHeal = Math.max(1, Math.round(s.player.maxHp * 0.15));
+            s.player.hp = Math.min(s.player.maxHp, s.player.hp + hakuHeal);
+            s.events.push({ type: 'heal', target: 'player', amount: hakuHeal });
+            s.log.push({
+              side: 'system',
+              text: `【白セット効果】次の被ダメージ無効障壁を展開 ＆ HPが ${hakuHeal.toLocaleString()} 回復！`,
+            });
             break;
+          }
           case 'chun':
             forceGoldDrawCount += 3;
             s.log.push({ side: 'system', text: '【中セット効果】補充牌のうち3枚が金牌になる！' });
-            gainMoney(s, 30, '中セット効果');
+            gainMoney(s, 100, '中セット追加祝儀');
             break;
           case 'iipeikou':
             drawThreePairs = true;
-            s.log.push({ side: 'system', text: '【一盃口効果】ペア（2枚組）を3セット補充する！' });
+            forceGoldDrawCount += 2;
+            s.log.push({ side: 'system', text: '【一盃口効果】ペア（2枚組）を3セット補充し、うち2枚を金牌化！' });
             break;
           case 'nishoku_doujun':
-            nextMult = Math.max(nextMult, 2);
-            s.log.push({ side: 'system', text: '【二色同順効果】次のチェーン倍率が2倍になる！' });
+            nextMult = Math.max(nextMult, 2.5);
+            s.log.push({ side: 'system', text: '【二色同順効果】次のチェーン倍率が2.5倍になる！' });
             break;
           case 'nishoku_doukou':
-            nextMult = Math.max(nextMult, 3);
-            s.log.push({ side: 'system', text: '【二色同刻効果】次のチェーン倍率が3倍になる！' });
+            nextMult = Math.max(nextMult, 3.5);
+            s.log.push({ side: 'system', text: '【二色同刻効果】次のチェーン倍率が3.5倍になる！' });
             break;
           case 'niankou':
             drawTriple = true;
@@ -1744,16 +2060,23 @@ export function step(prev: BattleState, action: Action): StepResult {
           case 'chanta':
             chantaGold = true;
             s.log.push({ side: 'system', text: '【チャンタ効果】手牌と補充牌の1・9・字牌がすべて金牌になる！' });
-            gainMoney(s, 50, 'チャンタ効果');
+            gainMoney(s, 150, 'チャンタ追加祝儀');
             break;
           case 'honiisou':
             s.buffs.honiisouTurns += 5;
             s.log.push({ side: 'system', text: '【混一色効果】字牌が金牌として補充される効果+5ターン！' });
             break;
-          case 'pinfu':
+          case 'pinfu': {
+            const pinfuHeal = Math.max(1, Math.round(s.player.maxHp * 0.2));
+            s.player.hp = Math.min(s.player.maxHp, s.player.hp + pinfuHeal);
+            s.events.push({ type: 'heal', target: 'player', amount: pinfuHeal });
             s.buffs.pinfuTurns += 5;
-            s.log.push({ side: 'system', text: '【平和効果】毎ターンHP自動回復の効果+5ターン！' });
+            s.log.push({
+              side: 'system',
+              text: `【平和効果】HPを ${pinfuHeal.toLocaleString()} 即時回復 ＆ 毎ターンHP15%自動回復+5ターン！`,
+            });
             break;
+          }
           case 'sanankou':
             s.buffs.sanankouTurns += 5;
             s.log.push({ side: 'system', text: '【三暗刻効果】ダメージ3倍の効果+5ターン！' });
@@ -1762,9 +2085,9 @@ export function step(prev: BattleState, action: Action): StepResult {
             s.buffs.chinroutouTurns += 5;
             s.log.push({
               side: 'system',
-              text: '【清老頭効果】補充がすべて2〜8の数牌になり30%で金牌化する効果+5ターン！',
+              text: '【清老頭効果】補充がすべて2〜8の数牌になり50%で金牌化する効果+5ターン！',
             });
-            gainMoney(s, 150, '清老頭効果');
+            gainMoney(s, 400, '清老頭追加祝儀');
             break;
           case 'chiniisou':
             s.buffs.chiniisouTurns += 5;
@@ -1787,23 +2110,31 @@ export function step(prev: BattleState, action: Action): StepResult {
             break;
           }
           case 'tsuuiisou': {
-            applyLevelUpDirect(s, 3);
+            s.buffs.sealYakuTurns = 0;
+            s.buffs.atkDownTurns = 0;
+            s.buffs.slowTurns = 0;
+            s.buffs.venomTurns = 0;
+            s.sealedTiles = {};
+            s.sealedEquipIndices = [];
+            s.log.push({ side: 'system', text: '【字一色効果】すべてのデバフ・封印が完全に浄化された！' });
             break;
           }
           case 'sankantsu': {
             const [legId] = rollRandomEquipments(s, rng, 1, 'legend', true);
             if (legId) grantEquipment(s, legId, rng);
-            s.log.push({ side: 'system', text: '【三槓子効果】このバトルの獲得経験値が30倍になった！' });
+            gainMoney(s, 500, '三槓子特別祝儀');
+            sankantsuRainbowHand = true;
+            s.log.push({ side: 'system', text: '【三槓子効果】補充後の手牌がすべて虹牌に輝く！' });
             break;
           }
         }
       }
 
-      const riichiGold30 = ev.isRiichiComplete;
+      const riichiGold50 = ev.isRiichiComplete;
       if (ev.isRiichiComplete) {
         s.riichi = false;
         s.riichiSwapsThisTurn = 0;
-        s.log.push({ side: 'system', text: '【リーチ完成効果】今回の補充牌が30%の確率で金牌になる！' });
+        s.log.push({ side: 'system', text: '【リーチ完成効果】今回の補充牌が50%の確率で金牌になる！' });
       }
 
       // 使用した手牌とカンを消費
@@ -1822,7 +2153,7 @@ export function step(prev: BattleState, action: Action): StepResult {
         countActiveEquip(s, 'single_clone_draw') > 0
       ) {
         const cloneKind = kindOf(s.hand[rng.int(s.hand.length)]);
-        drawOne(s, rng, { forceKind: cloneKind, forceGold: forceGoldDrawCount > 0, riichiGold30 });
+        drawOne(s, rng, { forceKind: cloneKind, forceGold: forceGoldDrawCount > 0, riichiGold50 });
         needDraw = 0;
       }
 
@@ -1832,8 +2163,8 @@ export function step(prev: BattleState, action: Action): StepResult {
         const availKinds = ACTIVE_KINDS.filter((k) => !isKindBanished(s, k));
         for (let p = 0; p < pairsToDraw; p++) {
           const pk = availKinds[rng.int(availKinds.length)];
-          drawOne(s, rng, { forceKind: pk, forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
-          drawOne(s, rng, { forceKind: pk, forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
+          drawOne(s, rng, { forceKind: pk, forceGold: forceGoldDrawCount-- > 0, riichiGold50 });
+          drawOne(s, rng, { forceKind: pk, forceGold: forceGoldDrawCount-- > 0, riichiGold50 });
           needDraw -= 2;
         }
       }
@@ -1843,7 +2174,7 @@ export function step(prev: BattleState, action: Action): StepResult {
         const availKinds = ACTIVE_KINDS.filter((k) => !isKindBanished(s, k));
         const tk = availKinds[rng.int(availKinds.length)];
         for (let i = 0; i < 3; i++) {
-          drawOne(s, rng, { forceKind: tk, forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
+          drawOne(s, rng, { forceKind: tk, forceGold: forceGoldDrawCount-- > 0, riichiGold50 });
         }
         needDraw -= 3;
       }
@@ -1854,8 +2185,8 @@ export function step(prev: BattleState, action: Action): StepResult {
         const availKinds = ACTIVE_KINDS.filter((k) => !isKindBanished(s, k));
         for (let p = 0; p < pairsToDraw && availKinds.length > 0; p++) {
           const pk = availKinds[rng.int(availKinds.length)];
-          drawOne(s, rng, { forceKind: pk, forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
-          drawOne(s, rng, { forceKind: pk, forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
+          drawOne(s, rng, { forceKind: pk, forceGold: forceGoldDrawCount-- > 0, riichiGold50 });
+          drawOne(s, rng, { forceKind: pk, forceGold: forceGoldDrawCount-- > 0, riichiGold50 });
           needDraw -= 2;
         }
       }
@@ -1868,15 +2199,15 @@ export function step(prev: BattleState, action: Action): StepResult {
         );
         for (let q = 0; q < seqsToDraw && seqStartKinds.length > 0; q++) {
           const sk = seqStartKinds[rng.int(seqStartKinds.length)];
-          drawOne(s, rng, { forceKind: sk, forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
-          drawOne(s, rng, { forceKind: sk + 1, forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
+          drawOne(s, rng, { forceKind: sk, forceGold: forceGoldDrawCount-- > 0, riichiGold50 });
+          drawOne(s, rng, { forceKind: sk + 1, forceGold: forceGoldDrawCount-- > 0, riichiGold50 });
           needDraw -= 2;
         }
       }
 
       // 残りの通常補充
       while (needDraw > 0) {
-        drawOne(s, rng, { forceGold: forceGoldDrawCount-- > 0, riichiGold30 });
+        drawOne(s, rng, { forceGold: forceGoldDrawCount-- > 0, riichiGold50 });
         needDraw--;
       }
 
@@ -1886,6 +2217,13 @@ export function step(prev: BattleState, action: Action): StepResult {
           if (isYaochu(kindOf(t)) && s.tileMods[t] !== 'rainbow' && s.tileMods[t] !== 'red') {
             s.tileMods[t] = 'gold';
           }
+        }
+      }
+
+      // 三槓子：手牌すべてを虹牌化
+      if (sankantsuRainbowHand) {
+        for (const t of s.hand) {
+          s.tileMods[t] = 'rainbow';
         }
       }
 
@@ -1937,11 +2275,6 @@ export function step(prev: BattleState, action: Action): StepResult {
       if (s.buffs.slowTurns > 0) {
         s.extraChains = 0;
         s.chain = 0;
-        if (s.pendingLevelUps > 0) {
-          s.pendingMonsterTurn = true;
-          s.rng = rng.state;
-          return { state: s, attack: ev };
-        }
         const afterPlayerState = structuredClone(s);
         const playerEvents = [...s.events];
         const playerLogs = s.log.slice(prevLogLen);
@@ -1970,11 +2303,6 @@ export function step(prev: BattleState, action: Action): StepResult {
           s.rng = rng.state;
           return { state: s, attack: ev };
         } else {
-          if (s.pendingLevelUps > 0) {
-            s.pendingMonsterTurn = true;
-            s.rng = rng.state;
-            return { state: s, attack: ev };
-          }
           const afterPlayerState = structuredClone(s);
           const playerEvents = [...s.events];
           const playerLogs = s.log.slice(prevLogLen);

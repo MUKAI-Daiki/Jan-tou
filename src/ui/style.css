@@ -468,6 +468,10 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 }
 .meld:hover { border-color: rgba(255, 255, 255, 0.45); }
 .meld.selected { border-color: var(--accent); transform: translateY(-8px); }
+.meld.meld-yaku-guide:not(.selected) {
+  border-color: #4ade80;
+  box-shadow: 0 0 10px rgba(74, 222, 128, 0.45);
+}
 
 .preview {
   min-height: 46px;
@@ -759,6 +763,15 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   filter: grayscale(0.6);
   cursor: not-allowed !important;
 }
+.tile.tile-yaku-guide:not(.selected) {
+  outline: 2.5px solid #4ade80;
+  outline-offset: 1px;
+  box-shadow: 0 3px 0 #b9ae8e, 0 0 10px rgba(74, 222, 128, 0.65);
+}
+.tile.tile-limit-disabled:not(.selected):not(.tile-yaku-guide) {
+  opacity: 0.35;
+  filter: grayscale(0.45);
+}
 
 /* 特殊牌（金牌・赤牌・虹牌・封印牌） */
 .tile.mod-gold {
@@ -823,6 +836,18 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   background: #0284c7;
   color: #fff;
 }
+.tile .yguide-badge {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  font-size: 8px;
+  padding: 0 3px;
+  border-radius: 3px;
+  line-height: 1.2;
+  background: #16a34a;
+  color: #fff;
+  box-shadow: 0 0 4px rgba(22, 163, 74, 0.8);
+}
 
 .tile .t { font-size: 21px; }
 .tile .b { font-size: 14px; }
@@ -848,7 +873,7 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 .tile.mini .b { font-size: 8.5px; }
 .tile.mini.s-p .t, .tile.mini.s-z .t { font-size: 15px; }
 .tile.mini.s-p .b { font-size: 7px; }
-.tile.mini .mbadge, .tile.mini .pwr, .tile.mini .sbadge, .tile.mini .tbadge { display: none; }
+.tile.mini .mbadge, .tile.mini .pwr, .tile.mini .sbadge, .tile.mini .tbadge, .tile.mini .yguide-badge { display: none; }
 
 /* ---------- モーダル・報酬 ---------- */
 .overlay {
@@ -984,6 +1009,11 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 .yaku-card .y-desc {
   color: var(--muted);
   font-size: 12.5px;
+}
+.yaku-card .y-perm {
+  color: #86efac;
+  font-size: 12px;
+  font-weight: bold;
 }
 .yaku-card.yakuman-card .y-name,
 .yaku-card.yakuman-card .y-han {
@@ -1302,6 +1332,24 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 }
 .btn-shop-heal:disabled {
   opacity: 0.45;
+  cursor: not-allowed;
+}
+.shop-upgrade-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.shop-upgrade-btn {
+  background: #1e3a38;
+  color: #93c5fd;
+  border: 1px solid #38bdf8;
+  padding: 8px 12px;
+  font-size: 13px;
+  border-radius: 8px;
+}
+.shop-upgrade-btn:disabled {
+  opacity: 0.4;
   cursor: not-allowed;
 }
 .shop-sell-list {

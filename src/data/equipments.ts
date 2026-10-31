@@ -19,7 +19,7 @@ export const RARITY_LABEL: Record<Rarity, string> = {
 };
 
 /** スコア計算用の装備レア度別ポイント（レア度が高いほど高得点） */
-export const RARITY_SCORE: Record<Rarity, number> = {
+export const RARITY_SCORE: Record<Rarity, string extends never ? never : number> = {
   common: 200,
   uncommon: 450,
   rare: 900,
@@ -88,14 +88,14 @@ export const JOBS: readonly JobDef[] = [
     name: 'ねこまんと',
     icon: '🐾',
     shortDesc: '独自役「ねこぱんち」＆四対子強化',
-    detailDesc: 'ペアを含むと役「ねこぱんち（ペア数倍威力＆ペア数チェーン）」成立。四対子の効果も強化',
+    detailDesc: 'ペアを含むと役「ねこぱんち（ペア数×1.5倍威力＆ペア数チェーン）」成立。四対子の効果も強化',
   },
   {
     id: 'yukako',
     name: 'ゆかこ',
     icon: '🎀',
-    shortDesc: '独自役「つよつよこうげき（威力3倍）」',
-    detailDesc: 'セットが1つ以上あり他の役がないとき、独自役「つよつよこうげき（最終ダメージ3倍）」が成立',
+    shortDesc: '独自役「つよつよこうげき（威力3.5倍）」',
+    detailDesc: 'セットが1つ以上あり他の役がないとき、独自役「つよつよこうげき（最終ダメージ3.5倍）」が成立',
   },
 ];
 
@@ -111,23 +111,23 @@ export const EQUIPMENTS: readonly EquipmentDef[] = [
   { id: 'atk_honor_2', name: '字牌の刻印', rarity: 'common', desc: '字牌の基礎攻撃+5' },
   { id: 'atk_term_2', name: '老頭の刻印', rarity: 'common', desc: '1・9牌の基礎攻撃+5' },
   { id: 'dmg_cut_10', name: '卓布の盾', rarity: 'common', desc: '被ダメージ-20%' },
-  { id: 'wind_east', name: '東風の紋章', rarity: 'common', desc: '「東」3枚が役になりチェーン+2', windKind: 27 },
-  { id: 'wind_south', name: '南風の紋章', rarity: 'common', desc: '「南」3枚が役になりチェーン+2', windKind: 28 },
-  { id: 'wind_west', name: '西風の紋章', rarity: 'common', desc: '「西」3枚が役になりチェーン+2', windKind: 29 },
-  { id: 'wind_north', name: '北風の紋章', rarity: 'common', desc: '「北」3枚が役になりチェーン+2', windKind: 30 },
+  { id: 'wind_east', name: '東風の紋章', rarity: 'common', desc: '「東」3枚が役になり威力1.5倍・チェーン+2', windKind: 27 },
+  { id: 'wind_south', name: '南風の紋章', rarity: 'common', desc: '「南」3枚が役になり威力1.5倍・チェーン+2', windKind: 28 },
+  { id: 'wind_west', name: '西風の紋章', rarity: 'common', desc: '「西」3枚が役になり威力1.5倍・チェーン+2', windKind: 29 },
+  { id: 'wind_north', name: '北風の紋章', rarity: 'common', desc: '「北」3枚が役になり威力1.5倍・チェーン+2', windKind: 30 },
 
   // ---- アンコモン ----
   {
     id: 'red_five_1',
     name: '赤五の宝珠',
     rarity: 'uncommon',
-    desc: '5の牌が各1枚赤牌化（セット使用で金効果＋同種攻撃+5［永続］＋25銭）',
+    desc: '5の牌が各1枚赤牌化（セット使用で金効果＋同種攻撃+5［永続］＋50銭）',
   },
   {
     id: 'unlock_tanyao',
     name: '招財の算盤',
     rarity: 'uncommon',
-    desc: '役成立ごとに1役につき+30銭',
+    desc: '役成立ごとに1役につき+60銭',
   },
   {
     id: 'unlock_heal',
@@ -146,7 +146,7 @@ export const EQUIPMENTS: readonly EquipmentDef[] = [
 
   // ---- レア ----
   { id: 'hp_up_30', name: '黄金の点箱', rarity: 'rare', desc: '最大HP+30%' },
-  { id: 'banner_heal_20', name: '癒しの戦旗', rarity: 'rare', desc: 'レベルアップ時、HPを20%回復' },
+  { id: 'banner_heal_20', name: '癒しの戦旗', rarity: 'rare', desc: '役成立時、HPを20%回復' },
   { id: 'flat_atk_10', name: '剛力の指輪', rarity: 'rare', desc: '攻撃時、基礎攻撃+10' },
   { id: 'always_chain_1', name: '連撃の双牌', rarity: 'rare', desc: '毎ターン追加攻撃+1回' },
   {
@@ -210,11 +210,10 @@ export const EQUIPMENTS: readonly EquipmentDef[] = [
     id: 'all_five_red',
     name: '真紅の五宝',
     rarity: 'legend',
-    desc: '5の牌がすべて赤牌化（セット使用で金効果＋同種攻撃+5［永続］＋25銭）',
+    desc: '5の牌がすべて赤牌化（セット使用で金効果＋同種攻撃+5［永続］＋50銭）',
   },
   { id: 'draw_rainbow_10', name: '極彩色の天牌', rarity: 'legend', desc: '補充牌が10%で虹牌化' },
 ];
 
 export const getEquipment = (id: string): EquipmentDef =>
   EQUIPMENTS.find((e) => e.id === id) ?? EQUIPMENTS[0];
-
