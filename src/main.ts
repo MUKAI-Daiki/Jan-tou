@@ -19,21 +19,21 @@ import {
 } from './core/mentsu';
 import { randomSeed } from './core/rng';
 import { evaluateSelection, findBestYakuCombo } from './core/score';
-import { TileGroup, kindName, kindOf } from './core/tile';
+import { TileGroup, isHonor, isWind, kindName, kindOf, suitOf } from './core/tile';
 import { JobId } from './data/equipments';
-import { MONSTERS, MonsterDef } from './data/monsters';
+import { DifficultyId, MONSTERS, MonsterDef } from './data/monsters';
 import { Preview, UiState, renderBattle, renderTitle } from './ui/render';
 
 const app = document.getElementById('app')!;
 
-const PLAYER_CHAR_MS = 44; // プレイヤーの文字送り間隔
-const MONSTER_CHAR_MS = 58; // 敵の文字送り間隔
-const ENEMY_WAIT_MS = 300; // 敵ターンの各節目の0.3秒ウェイト
-const SLIDE_OUT_MS = 220; // 行移行時のスライドアウト時間
-const SLIDE_IN_WAIT_MS = 220; // 行移行時のスライドイン＆ウェイト時間
+const PLAYER_CHAR_MS = 28; // プレイヤーの文字送り間隔
+const MONSTER_CHAR_MS = 36; // 敵の文字送り間隔
+const ENEMY_WAIT_MS = 240; // 敵ターンの各節目のウェイト
+const SLIDE_OUT_MS = 160; // 行移行時のスライドアウト時間
+const SLIDE_IN_WAIT_MS = 160; // 行移行時のスライドイン＆ウェイト時間
 const ATTACK_OUT_MS = 180; // 攻撃牌の上方向スライド＋フェードアウト時間
 const DRAW_IN_MS = 300; // 補充牌の下方向スライドイン＋フラッシュ時間
-const ENEMY_DEFEAT_MS = 950; // 敵撃破時の点滅→ダークアウト演出時間
+const ENEMY_DEFEAT_MS = 850; // 敵撃破時の点滅→ダークアウト演出時間
 
 let screen: 'title' | 'battle' = 'title';
 let state: BattleState | null = null;
@@ -49,10 +49,12 @@ let logQueue: LogEntry[] = [];
 
 const ui: UiState = {
   selectedJob: 'sword',
+  selectedDifficulty: 'beginner',
   selected: new Set(),
   selectedMelds: new Set(),
   selectionOrder: [],
   copyMode: false,
+  alchemyMode: false,
   searchMode: false,
   searchPickedKind: null,
   riichiSelectMode: false,
@@ -60,6 +62,9 @@ const ui: UiState = {
   isEnemyTurnAnimating: false,
   drawAnimActive: false,
   isEnemyDefeatAnimating: false,
+  isLogAnimating: false,
+  jobDetailId: null,
+  showEquipModal: false,
   logOpen: false,
   liveLogText: '',
   liveLogSide: 'system',
@@ -71,6 +76,7 @@ function isBusyAnimating(): boolean {
   return Boolean(
     ui.isEnemyTurnAnimating ||
       ui.isEnemyDefeatAnimating ||
+      ui.isLogAnimating ||
       attackOutTimer !== null,
   );
 }
@@ -106,6 +112,7 @@ function stopTypewriter() {
   ui.isEnemyTurnAnimating = false;
   ui.drawAnimActive = false;
   ui.isEnemyDefeatAnimating = false;
+  ui.isLogAnimating = false;
   ui.liveLogTransition = 'idle';
   displayedState = null;
 }
@@ -240,16 +247,16 @@ function playNextLogInQueue(onAllDone?: () => void) {
   const speed = entry.side === 'monster' ? MONSTER_CHAR_MS : PLAYER_CHAR_MS;
   transitionAndTypeLine(entry.side, entry.text, speed, null, () => {
     if (logQueue.length > 0) {
-      typewriterTimer = window.setTimeout(() => playNextLogInQueue(onAllDone), 340);
+      typewriterTimer = window.setTimeout(() => playNextLogInQueue(onAllDone), 220);
     } else if (onAllDone) {
-      typewriterTimer = window.setTimeout(onAllDone, 280);
+      typewriterTimer = window.setTimeout(onAllDone, 200);
     } else {
       typewriterTimer = null;
       phaseResetTimer = window.setTimeout(() => {
         phaseResetTimer = null;
         ui.combatPhase = 'idle';
         syncCombatPhaseDom();
-      }, 500);
+      }, 400);
     }
   });
 }
@@ -299,6 +306,7 @@ function clearSelection() {
   ui.selectedMelds.clear();
   ui.selectionOrder = [];
   ui.copyMode = false;
+  ui.alchemyMode = false;
   ui.searchMode = false;
   ui.searchPickedKind = null;
   ui.riichiSelectMode = false;
@@ -417,6 +425,17 @@ function computePreview(s: BattleState): Preview {
     };
   }
 
+  if (ui.alchemyMode) {
+    return {
+      ...none,
+      canCure: false,
+      canKan: false,
+      canRiichi: false,
+      text: '🧪 数牌調合：手牌から数牌（萬・筒・索）を1枚選択',
+      subText: '選んだ数牌を隣の数字（±1）に変化させ、さらに金牌にします（クールタイム3ターン）',
+    };
+  }
+
   if (ui.searchMode) {
     if (ui.searchPickedKind !== null && ui.searchPickedKind !== undefined) {
       return {
@@ -527,32 +546,67 @@ function computePreview(s: BattleState): Preview {
 
   const yakuStr =
     ev.yaku.length > 0
-      ? ev.yaku.map((y) => `【${y.name}：${y.effectText}】`).join(' ')
+      ? ev.yaku.map((y) => `【${y.name}】${y.effectText}`).join(' ')
       : ev.decomp.sets.length > 0
-        ? `セットのみ（×${ev.setCountMult}）`
-        : `役なし（${tiles.length}/3枚）`;
+        ? `【セットのみ】📦×${ev.setCountMult}`
+        : `【役なし】(${tiles.length}/3枚)`;
 
-  const actionWord = s.healMode ? '回復' : 'ダメージ';
+  const actionIcon = s.healMode ? '❤️+' : '💥';
   const chainNotice =
     ev.gainedChains > 0
-      ? ` ／ チェーン+${ev.gainedChains}`
+      ? ` ⛓️+${ev.gainedChains}`
       : s.extraChains > 0
-        ? ` ／ 連続行動可`
+        ? ` ⛓️残${s.extraChains}`
         : '';
 
-  const text = `${yakuStr} → ${ev.damage.toLocaleString()} ${actionWord}${chainNotice}`;
-  const setMultNote = ev.setCountMult > 1 ? ` ｜ 倍率×${ev.setCountMult}` : '';
-  const jobNote = `${
-    ev.basicDrawPairs > 0 ? ` ｜ 雀剣士:威力2倍・ペア×${ev.basicDrawPairs}補充` : ''
-  }${
+  const text = `${yakuStr} → ${actionIcon}${ev.damage.toLocaleString()}${chainNotice}`;
+  const setMultNote = ev.setCountMult > 1 ? ` 📦×${ev.setCountMult}` : '';
+  const totalKoutsu = koutsuCount + kantsuCount;
+  const hasManShuntsu = ev.decomp.sets.some((m) => m.type === 'shuntsu' && suitOf(m.kind) === 'm');
+  const hasPinShuntsu = ev.decomp.sets.some((m) => m.type === 'shuntsu' && suitOf(m.kind) === 'p');
+  const hasSouShuntsu = ev.decomp.sets.some((m) => m.type === 'shuntsu' && suitOf(m.kind) === 's');
+  const hasHonorSet = ev.decomp.sets.some(
+    (m) => (m.type === 'koutsu' || m.type === 'kantsu') && isHonor(m.kind),
+  );
+  const hasWindSet = ev.decomp.sets.some(
+    (m) => (m.type === 'koutsu' || m.type === 'kantsu') && isWind(m.kind),
+  );
+  const hasHonorInYaku =
+    ev.yaku.length > 0 &&
+    (ev.decomp.sets.some((m) => m.tiles.some((t) => isHonor(kindOf(t)))) ||
+      ev.decomp.pairs.some((p) => isHonor(p.kind)));
+
+  const swordNote =
+    ev.yaku.length === 0 && ev.basicDrawPairs > 0
+      ? ` ｜ ⚔️×2 🀇ペア+${ev.basicDrawPairs}`
+      : s.job === 'sword' && ev.yaku.length > 0 && totalKoutsu > 0
+        ? ` ｜ ⚔️×${totalKoutsu === 1 ? '1.5' : totalKoutsu === 2 ? '2' : '2.5'} 🀇ペア+1 🟨+${totalKoutsu}`
+        : '';
+  const docMagics: string[] = [];
+  if (s.job === 'doctor' && ev.yaku.length > 0) {
+    if (hasManShuntsu) docMagics.push('🔥⚔️×1.25 🟥+1');
+    if (hasPinShuntsu) docMagics.push('❄️解除・敵⚔️-30%');
+    if (hasSouShuntsu) docMagics.push('🌿浄化 🛡️+15%');
+  }
+  const doctorNote =
     ev.basicDrawSeq2 > 0
-      ? ` ｜ 麻雀医:HP+${Math.round(ev.basicShuntsuHealRate * 100)}%・2連×${ev.basicDrawSeq2}補充`
-      : ''
-  }${ev.jobBonusChains > 0 ? ' ｜ 忍び:威力2.5倍・チェーン+1' : ''}`;
-  const yakuMoneyNote = ev.yakuMoney > 0 ? ` ｜ 役報酬+${ev.yakuMoney}銭` : '';
-  const goldNote = ev.goldCount > 0 ? ` ｜ 金/赤+${ev.goldCount * 50}%` : '';
-  const rainbowNote = ev.rainbowCount > 0 ? ` ｜ 虹×${ev.rainbowCount}` : '';
-  const subText = `${parts.join('・')} ｜ 基礎 ${guardAmount}（牌${ev.tilePower}+加点${ev.setBonus}）${setMultNote}${jobNote}${yakuMoneyNote}${goldNote}${rainbowNote}`;
+      ? ` ｜ 💊❤️+${Math.round(ev.basicShuntsuHealRate * 100)}% 🀇連+${ev.basicDrawSeq2}`
+      : docMagics.length > 0
+        ? ` ｜ 💊${docMagics.join(' ')}`
+        : '';
+  const ninjaEffects: string[] = [];
+  if (s.job === 'ninja') {
+    if (hasHonorSet) ninjaEffects.push('⚔️×4');
+    if (hasHonorInYaku) ninjaEffects.push('☠️毒3T');
+    if (ev.yaku.length > 0 && hasWindSet) ninjaEffects.push('⚡足止め1T');
+  }
+  const ninjaNote = ninjaEffects.length > 0 ? ` ｜ 🥷${ninjaEffects.join(' ')}` : '';
+
+  const jobNote = `${swordNote}${doctorNote}${ninjaNote}`;
+  const yakuMoneyNote = ev.yakuMoney > 0 ? ` ｜ 💰+${ev.yakuMoney}` : '';
+  const goldNote = ev.goldCount > 0 ? ` ｜ 🟨+${ev.goldCount * 50}%` : '';
+  const rainbowNote = ev.rainbowCount > 0 ? ` ｜ 🌈×${ev.rainbowCount}` : '';
+  const subText = `${parts.join('・')} ｜ 🛡️${guardAmount}(牌${ev.tilePower}+加${ev.setBonus})${setMultNote}${jobNote}${yakuMoneyNote}${goldNote}${rainbowNote}`;
 
   return {
     text,
@@ -571,7 +625,12 @@ function computePreview(s: BattleState): Preview {
 function render() {
   const activeState = displayedState ?? state;
   if (screen === 'title' || !activeState) {
-    app.innerHTML = renderTitle(ui.showYakuModal, ui.selectedJob);
+    app.innerHTML = renderTitle(
+      ui.showYakuModal,
+      ui.selectedJob,
+      ui.selectedDifficulty,
+      ui.jobDetailId ?? null,
+    );
     return;
   }
   app.innerHTML = renderBattle({
@@ -633,6 +692,8 @@ function dispatch(action: Action) {
     const justDefeatedEnemy =
       prevState.status === 'playing' &&
       (r.state.status === 'reward' || r.state.status === 'won');
+    const justLostPlayer =
+      prevState.status === 'playing' && r.state.status === 'lost';
 
     // 敵ターンが発生した場合は、プレイヤーフェーズ -> 敵ターンフェーズを順再生
     if (r.monsterTurnSteps && r.monsterTurnSteps.length > 0 && r.afterPlayerState) {
@@ -642,18 +703,30 @@ function dispatch(action: Action) {
       render();
 
       const pLogs = r.playerLogs ?? [];
+      const afterMonsterLogStart = prevLogLen + pLogs.length + r.monsterTurnSteps.length;
+      const trailingLogs = r.state.log.slice(afterMonsterLogStart);
+
       enqueueLogs(pLogs, () => {
         playMonsterTurnSequence(r.monsterTurnSteps!, () => {
-          displayedState = null;
-          ui.isEnemyTurnAnimating = false;
-          ui.combatPhase = 'idle';
-          pendingEvents = r.state.events;
+          const finishEnemyTurn = () => {
+            displayedState = null;
+            ui.isEnemyTurnAnimating = false;
+            ui.isLogAnimating = false;
+            ui.combatPhase = 'idle';
+            pendingEvents = r.state.events;
 
-          if (state && state.status === 'playing' && state.riichi && hasThreeSets(state.hand, state.melds)) {
-            selectAllPlayableTiles(state);
+            if (state && state.status === 'playing' && state.riichi && hasThreeSets(state.hand, state.melds)) {
+              selectAllPlayableTiles(state);
+            }
+            render();
+            checkAndScheduleAutoRiichi();
+          };
+
+          if (trailingLogs.length > 0) {
+            enqueueLogs(trailingLogs, finishEnemyTurn);
+          } else {
+            finishEnemyTurn();
           }
-          render();
-          checkAndScheduleAutoRiichi();
         });
       });
       return;
@@ -662,16 +735,20 @@ function dispatch(action: Action) {
     pendingEvents = r.state.events;
     const newLogs = state.log.slice(prevLogLen);
 
-    if (justDefeatedEnemy) {
-      if (newLogs.length > 0) {
-        enqueueLogs(newLogs);
-      }
-      scheduleDefeatAnimation(justDefeatedEnemy, () => {
-        if (state && state.status === 'playing' && state.riichi && hasThreeSets(state.hand, state.melds)) {
-          selectAllPlayableTiles(state);
-        }
-        render();
-        checkAndScheduleAutoRiichi();
+    // 勝利・報酬・敗北などのイベント発生時は、ダイアログを描画しきってからイベント画面へ進める
+    if (justDefeatedEnemy || justLostPlayer) {
+      ui.isLogAnimating = true;
+      render();
+      enqueueLogs(newLogs, () => {
+        scheduleDefeatAnimation(justDefeatedEnemy, () => {
+          ui.isLogAnimating = false;
+          ui.combatPhase = 'idle';
+          if (state && state.status === 'playing' && state.riichi && hasThreeSets(state.hand, state.melds)) {
+            selectAllPlayableTiles(state);
+          }
+          render();
+          checkAndScheduleAutoRiichi();
+        });
       });
       return;
     }
@@ -710,10 +787,10 @@ function dispatch(action: Action) {
   }
 }
 
-function startBattle(def: MonsterDef) {
+function startBattle(def: MonsterDef, difficulty: DifficultyId = ui.selectedDifficulty) {
   stopAutoRiichiTimer();
   stopTypewriter();
-  state = newBattle(def, randomSeed(), ui.selectedJob);
+  state = newBattle(def, randomSeed(), ui.selectedJob, difficulty);
   screen = 'battle';
   clearSelection();
   ui.combatPhase = 'idle';
@@ -721,12 +798,28 @@ function startBattle(def: MonsterDef) {
   ui.logOpen = false;
   ui.showWallModal = false;
   ui.showYakuModal = false;
+  ui.showEquipModal = false;
+  ui.jobDetailId = null;
   render();
   enqueueLogs(state.log);
 }
 
 app.addEventListener('click', (e) => {
   const target = e.target as HTMLElement;
+  const diffEl = target.closest<HTMLElement>('[data-difficulty]');
+  if (diffEl?.dataset.difficulty) {
+    ui.selectedDifficulty = diffEl.dataset.difficulty as DifficultyId;
+    render();
+    return;
+  }
+
+  const jobDetailEl = target.closest<HTMLElement>('[data-job-detail]');
+  if (jobDetailEl?.dataset.jobDetail) {
+    ui.jobDetailId = jobDetailEl.dataset.jobDetail as JobId;
+    render();
+    return;
+  }
+
   const jobEl = target.closest<HTMLElement>('[data-job]');
   if (jobEl?.dataset.job) {
     ui.selectedJob = jobEl.dataset.job as JobId;
@@ -763,6 +856,23 @@ app.addEventListener('click', (e) => {
   if (actionEl?.dataset.action === 'close-yaku') {
     if (actionEl.classList.contains('overlay') && target.closest('[data-stop]')) return;
     ui.showYakuModal = false;
+    render();
+    return;
+  }
+  if (actionEl?.dataset.action === 'close-job-detail') {
+    if (actionEl.classList.contains('overlay') && target.closest('[data-stop]')) return;
+    ui.jobDetailId = null;
+    render();
+    return;
+  }
+  if (actionEl?.dataset.action === 'open-equip-detail') {
+    ui.showEquipModal = true;
+    render();
+    return;
+  }
+  if (actionEl?.dataset.action === 'close-equip-detail') {
+    if (actionEl.classList.contains('overlay') && target.closest('[data-stop]')) return;
+    ui.showEquipModal = false;
     render();
     return;
   }
@@ -825,6 +935,15 @@ app.addEventListener('click', (e) => {
   if (el.dataset.tile !== undefined) {
     if (state.status !== 'playing' || isBusyAnimating()) return;
     const t = Number(el.dataset.tile);
+
+    // 麻雀医の「数牌調合」モード中：クリックした数牌を隣の数字（±1）＋金牌に変化させる
+    if (ui.alchemyMode) {
+      dispatch({
+        type: 'skill_alchemy',
+        targetTile: t,
+      });
+      return;
+    }
 
     // 複製モード中：1枚目＝複製対象（sourceTile） → 2枚目＝消す牌（targetTile）の順に選択して即時発動
     if (ui.copyMode) {
@@ -950,6 +1069,7 @@ app.addEventListener('click', (e) => {
       state.status !== 'playing' ||
       ui.riichiSelectMode ||
       ui.copyMode ||
+      ui.alchemyMode ||
       ui.searchMode ||
       isBusyAnimating()
     ) {
@@ -1006,6 +1126,7 @@ app.addEventListener('click', (e) => {
       const currentSelected = [...ui.selected];
       ui.selectedMelds.clear();
       ui.copyMode = false;
+      ui.alchemyMode = false;
       ui.searchMode = false;
       ui.searchPickedKind = null;
       ui.riichiSelectMode = true;
@@ -1041,6 +1162,18 @@ app.addEventListener('click', (e) => {
     case 'skill-reset-wall':
       dispatch({ type: 'skill_reset_wall' });
       break;
+    case 'skill-alchemy': {
+      if (isBusyAnimating()) break;
+      if (ui.alchemyMode) {
+        clearSelection();
+      } else {
+        clearSelection();
+        ui.alchemyMode = true;
+      }
+      ui.message = '';
+      render();
+      break;
+    }
     case 'skill-copy': {
       if (isBusyAnimating()) break;
       if (ui.copyMode) {
@@ -1102,7 +1235,7 @@ app.addEventListener('click', (e) => {
       dispatch({ type: 'leave_shop' });
       break;
     case 'retry':
-      startBattle(MONSTERS[0]);
+      startBattle(MONSTERS[0], state?.difficulty ?? ui.selectedDifficulty);
       break;
     case 'title':
       stopAutoRiichiTimer();

@@ -106,6 +106,50 @@ export interface MonsterDef {
 export const PLAYER_INITIAL_HP = 300;
 export const MAX_STAGE = 10;
 
+export type DifficultyId = 'beginner' | 'advanced';
+
+export interface DifficultyDef {
+  id: DifficultyId;
+  name: string;
+  desc: string;
+  hpMult: number;
+  atkMult: number;
+}
+
+export const DIFFICULTIES: readonly DifficultyDef[] = [
+  {
+    id: 'beginner',
+    name: '初級編',
+    desc: '標準の10連戦（敵HP 1倍・敵攻撃力 1倍）',
+    hpMult: 1,
+    atkMult: 1,
+  },
+  {
+    id: 'advanced',
+    name: '上級編',
+    desc: '強敵が立ち塞がる高難度10連戦（敵HP 2倍・敵攻撃力 2倍）',
+    hpMult: 2,
+    atkMult: 2,
+  },
+];
+
+export function getDifficultyDef(id: DifficultyId = 'beginner'): DifficultyDef {
+  return DIFFICULTIES.find((d) => d.id === id) ?? DIFFICULTIES[0];
+}
+
+export function getMonsterForDifficulty(
+  def: MonsterDef,
+  difficulty: DifficultyId = 'beginner',
+): MonsterDef {
+  const d = getDifficultyDef(difficulty);
+  if (d.hpMult === 1 && d.atkMult === 1) return def;
+  return {
+    ...def,
+    hp: Math.round(def.hp * d.hpMult),
+    atk: Math.round(def.atk * d.atkMult),
+  };
+}
+
 /** 10連戦のモンスター定義（敵攻撃力・HPを増強し、ボス級モンスターに固有の特殊行動を設定） */
 export const MONSTERS: readonly MonsterDef[] = [
   {

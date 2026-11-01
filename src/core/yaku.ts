@@ -117,32 +117,32 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
   {
     name: '白セット',
     scope: '1セット役',
-    effect: '威力1.5倍・次被ダメ無効・HP15%回復・+100銭・チェーン1',
-    permEffect: '最大HP+15・三元牌攻撃+2',
+    effect: '⚔️×1.5 ⛓️+1 🛡️無効 ❤️+15% 💰+100',
+    permEffect: '❤️最大+15 ⚔️三元+2',
     desc: '「白」3枚（またはカン）',
     example: [[31, 31, 31]],
   },
   {
     name: '發セット',
     scope: '1セット役',
-    effect: '威力2.5倍・+100銭・チェーン1',
-    permEffect: '索子・三元牌の攻撃+2',
+    effect: '⚔️×2.5 ⛓️+1 💰+100',
+    permEffect: '⚔️索+2 ⚔️三元+2',
     desc: '「發」3枚（またはカン）',
     example: [[32, 32, 32]],
   },
   {
     name: '中セット',
     scope: '1セット役',
-    effect: '威力1.5倍・補充3枚金化・+200銭・チェーン1',
-    permEffect: '三元牌の攻撃+4',
+    effect: '⚔️×1.5 ⛓️+1 🟨+3 💰+200',
+    permEffect: '⚔️三元+4',
     desc: '「中」3枚（またはカン）',
     example: [[33, 33, 33]],
   },
   {
     name: 'リーチ',
     scope: '1セット役',
-    effect: '威力2.5倍・補充50%金化・+100銭・チェーン2',
-    permEffect: '全数牌（萬・筒・索）攻撃+2・最大HP+20',
+    effect: '⚔️×2.5(師×3) ⛓️+2 🟨50% 💰+100',
+    permEffect: '⚔️数牌+2 ❤️最大+20',
     desc: 'リーチ中に3セット完成で攻撃',
     example: [[0, 1, 2], [12, 13, 14], [20, 21, 22]],
   },
@@ -151,48 +151,48 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
   {
     name: 'タンヤオ',
     scope: '2セット役',
-    effect: '威力2倍・+250銭・チェーン1',
-    permEffect: '使用した数牌種の攻撃+2',
+    effect: '⚔️×2 ⛓️+1 💰+250',
+    permEffect: '⚔️使用数牌+2',
     desc: '2〜8の数牌のみで2セット以上',
     example: [[1, 2, 3], [12, 12, 12]],
   },
   {
     name: '一盃口',
     scope: '2セット役',
-    effect: '威力1.5倍・ペア3組補充（うち2枚金化）・+250銭・チェーン1',
-    permEffect: '成立させた数牌種の攻撃+4',
+    effect: '⚔️×2 ⛓️+2 🀄ペア×3 🟨+2 💰+250',
+    permEffect: '⚔️同順数牌+4',
     desc: '同種・同数字の並びセット2組',
     example: [[0, 1, 2], [0, 1, 2]],
   },
   {
     name: '二色同順',
     scope: '2セット役',
-    effect: '威力1.5倍・次チェーン倍率2.5倍・+250銭・チェーン1',
-    permEffect: '成立させた2種の数牌攻撃 各+3',
+    effect: '⚔️×2 ⛓️+2 ⚡次×2.5 💰+250',
+    permEffect: '⚔️同順2色+3',
     desc: '異種・同数字の並びセット2組',
     example: [[1, 2, 3], [10, 11, 12]],
   },
   {
     name: '二色同刻',
     scope: '2セット役',
-    effect: '威力2倍・次チェーン倍率3.5倍・+250銭・チェーン1',
-    permEffect: '成立させた2種の数牌攻撃 各+4',
+    effect: '⚔️×2.5 ⛓️+2 ⚡次×3.5 💰+250',
+    permEffect: '⚔️同刻2色+4',
     desc: '異種・同数字の同牌セット2組',
     example: [[4, 4, 4], [13, 13, 13]],
   },
   {
     name: '二暗刻',
     scope: '2セット役',
-    effect: '威力1.5倍・同牌セット1組補充・+250銭・チェーン1',
-    permEffect: '使用した同牌セットの牌種攻撃+2',
+    effect: '⚔️×1.5 ⛓️+2 🀄3枚組×1 💰+250',
+    permEffect: '⚔️同刻牌種+2',
     desc: '同牌セット（またはカン）2組以上',
     example: [[1, 1, 1], [24, 24, 24]],
   },
   {
     name: 'チャンタ',
     scope: '2セット役',
-    effect: '威力1.5倍・手牌と補充の1/9/字牌を金化・+400銭・チェーン1',
-    permEffect: '風牌・三元牌の攻撃+3・最大HP+25',
+    effect: '⚔️×2.5 ⛓️+2 🟨1・9・字 💰+400',
+    permEffect: '⚔️字牌+3 ❤️最大+25',
     desc: '全セットに1・9・字牌を含む2セット以上',
     example: [[0, 1, 2], [27, 27, 27]],
   },
@@ -201,8 +201,8 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
   {
     name: '四対子',
     scope: '特殊役',
-    effect: '威力2倍・+350銭・チェーン4',
-    permEffect: '全牌種の攻撃+2・最大HP+30',
+    effect: '⚔️×2 ⛓️+4 💰+350',
+    permEffect: '⚔️全牌+2 ❤️最大+30',
     desc: '異なるペア4組（計8枚）',
     example: [[1, 1], [12, 12], [20, 20], [31, 31]],
   },
@@ -211,40 +211,40 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
   {
     name: '混一色',
     scope: '3セット役',
-    effect: '威力2倍・5T字牌を金で補充・+600銭・チェーン2',
-    permEffect: '使用数牌・風牌・三元牌の攻撃 各+4',
+    effect: '⚔️×4 ⛓️+3 🟨字(5T) 💰+600',
+    permEffect: '⚔️数牌・字牌+4',
     desc: '1種の数牌＋字牌で3セット',
     example: [[0, 1, 2], [4, 5, 6], [27, 27, 27]],
   },
   {
     name: '平和',
     scope: '3セット役',
-    effect: '威力1.5倍・HP20%即時回復・5T毎ターンHP15%回復・+600銭・チェーン2',
-    permEffect: '最大HP+50・使用数牌の攻撃+3',
+    effect: '⚔️×3 ⛓️+3 ❤️+20% 💚毎T15%(5T) 💰+600',
+    permEffect: '❤️最大+50 ⚔️使用数牌+3',
     desc: '並びセット3組',
     example: [[0, 1, 2], [12, 13, 14], [20, 21, 22]],
   },
   {
     name: '三暗刻',
     scope: '3セット役',
-    effect: '威力2倍・5T威力3倍・+600銭・チェーン2',
-    permEffect: '全牌種の攻撃+3',
+    effect: '⚔️×3 ⛓️+3 🔥威力×3(5T) 💰+600',
+    permEffect: '⚔️全牌+3',
     desc: '同牌セット（またはカン）3組',
     example: [[1, 1, 1], [13, 13, 13], [25, 25, 25]],
   },
   {
     name: '清老頭',
     scope: '3セット役',
-    effect: '威力3倍・5T補充が2〜8＆50%金化・+1000銭・チェーン2',
-    permEffect: '全数牌（萬・筒・索）攻撃+5・最大HP+50',
+    effect: '⚔️×5 ⛓️+3 🟨2〜8(5T) 💰+1000',
+    permEffect: '⚔️数牌+5 ❤️最大+50',
     desc: '1・9の数牌のみで3セット',
     example: [[0, 0, 0], [8, 8, 8], [17, 17, 17]],
   },
   {
     name: '清一色',
     scope: '3セット役',
-    effect: '威力3倍・5T山外から同種数牌を補充・+600銭・チェーン2',
-    permEffect: '成立させた数牌種の攻撃+8',
+    effect: '⚔️×6 ⛓️+3 🀄同色(5T) 💰+600',
+    permEffect: '⚔️同色+8',
     desc: '同種の数牌のみで3セット',
     example: [[9, 10, 11], [12, 13, 14], [16, 16, 16]],
   },
@@ -253,8 +253,8 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
   {
     name: '大三元',
     scope: '3セット役（役満）',
-    effect: '威力12倍・装備3個獲得・+1000銭・チェーン3',
-    permEffect: '三元牌の攻撃+15・最大HP+100',
+    effect: '⚔️×12 ⛓️+3 🎁装備×3 💰+1000',
+    permEffect: '⚔️三元+15 ❤️最大+100',
     desc: '白・發・中のセット3組（非複合）',
     example: [[31, 31, 31], [32, 32, 32], [33, 33, 33]],
     highTier: true,
@@ -262,8 +262,8 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
   {
     name: '緑一色',
     scope: '3セット役（役満）',
-    effect: '威力12倍・HP全回復・+1000銭・チェーン3',
-    permEffect: '索子・三元牌の攻撃+12・最大HP+150',
+    effect: '⚔️×15 ⛓️+3 ❤️全快 💰+1000',
+    permEffect: '⚔️索・三元+12 ❤️最大+150',
     desc: '索子2・3・4・6・8と發のみで3セット（非複合）',
     example: [[19, 20, 21], [23, 23, 23], [32, 32, 32]],
     highTier: true,
@@ -271,8 +271,8 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
   {
     name: '字一色',
     scope: '3セット役（役満）',
-    effect: '威力12倍・全デバフ解除・+1000銭・チェーン3',
-    permEffect: '風牌・三元牌の攻撃+15・最大HP+150',
+    effect: '⚔️×15 ⛓️+3 ✨全浄化 💰+1000',
+    permEffect: '⚔️字牌+15 ❤️最大+150',
     desc: '字牌のみで3セット（非複合）',
     example: [[27, 27, 27], [28, 28, 28], [31, 31, 31]],
     highTier: true,
@@ -280,8 +280,8 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
   {
     name: '三槓子',
     scope: '3セット役（役満）',
-    effect: '威力15倍・伝説装備1個・手牌全虹化・+1500銭・チェーン3',
-    permEffect: '全牌種の攻撃+10・最大HP+150',
+    effect: '⚔️×20 ⛓️+3 🌈全虹 🎁伝説 💰+1500',
+    permEffect: '⚔️全牌+10 ❤️最大+150',
     desc: 'カン3組（非複合）',
     example: [[1, 1, 1, 1], [13, 13, 13, 13], [25, 25, 25, 25]],
     highTier: true,
@@ -291,9 +291,9 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
   {
     name: '風牌セット',
     scope: '装備役',
-    effect: '威力1.5倍・+100銭・チェーン2',
-    permEffect: '風牌の攻撃+3・最大HP+10',
-    desc: '対応する風の紋章所持時、その風牌3枚',
+    effect: '⚔️×2 ⛓️+2 💰+100',
+    permEffect: '⚔️風+3 ❤️最大+10',
+    desc: '対応する風の紋章所持時（忍びは初期解禁）、その風牌3枚',
     example: [[27, 27, 27]],
   },
 
@@ -301,16 +301,16 @@ export const YAKU_CATALOG: readonly YakuCatalogEntry[] = [
   {
     name: 'ねこぱんち（ねこまんと専用）',
     scope: '職業役',
-    effect: '威力（ペア数×1.5）倍・+100銭・チェーン（ペア数）',
-    permEffect: 'ペアの牌種攻撃+1（ペアごと）',
+    effect: '⚔️×(ペア×1.5) ⛓️+(ペア数) 💰+100',
+    permEffect: '⚔️ペア牌種+1',
     desc: '攻撃牌の中にペアが含まれると成立',
     example: [[4, 4], [13, 13]],
   },
   {
     name: 'つよつよこうげき（ゆかこ専用）',
     scope: '職業役',
-    effect: '威力3.5倍・+100銭・チェーン1',
-    permEffect: '使用セットの牌種攻撃+2・最大HP+10',
+    effect: '⚔️×3.5 ⛓️+1 💰+100',
+    permEffect: '⚔️使用牌種+2 ❤️最大+10',
     desc: 'セット1組以上かつ他の役がないとき成立',
     example: [[1, 2, 3]],
   },
@@ -332,7 +332,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           tier: 'special',
           dmgMult: 3,
           chains: 4,
-          effectText: '威力3倍・チェーン4・永続[全牌種+2/HP+30]',
+          effectText: '⚔️×3 ⛓️+4 🌟全牌+2 ❤️+30',
         },
         {
           id: 'neko_punch',
@@ -340,7 +340,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           tier: 1,
           dmgMult: 6,
           chains: 4,
-          effectText: '威力6倍・チェーン4（4ペア）・永続[ペア牌種+4]',
+          effectText: '⚔️×6 ⛓️+4 🌟牌+4',
         },
       ];
     }
@@ -351,7 +351,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 'special',
         dmgMult: 2,
         chains: 4,
-        effectText: '威力2倍・チェーン4・永続[全牌種+2/HP+30]',
+        effectText: '⚔️×2 ⛓️+4 🌟全牌+2 ❤️+30',
       },
     ];
   }
@@ -369,7 +369,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           tier: 1,
           dmgMult: mult,
           chains: pCount,
-          effectText: `威力${mult}倍・チェーン${pCount}（${pCount}ペア）・永続[ペア牌種+${pCount}]`,
+          effectText: `⚔️×${mult} ⛓️+${pCount} 🌟牌+${pCount}`,
         },
       ];
     }
@@ -390,9 +390,9 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           id: 'sankantsu',
           name: '三槓子',
           tier: 3,
-          dmgMult: 15,
+          dmgMult: 20,
           chains: 3,
-          effectText: '威力15倍・伝説装備1・手牌全虹化・+1500銭・チェーン3・永続[全牌種+10/HP+150]',
+          effectText: '⚔️×20 ⛓️+3 🌈全虹 🎁伝説 🌟全牌+10 ❤️+150',
         },
       ];
     }
@@ -404,7 +404,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           tier: 3,
           dmgMult: 12,
           chains: 3,
-          effectText: '威力12倍・装備3個・+1000銭・チェーン3・永続[三元+15/HP+100]',
+          effectText: '⚔️×12 ⛓️+3 🎁装備×3 🌟三元+15 ❤️+100',
         },
       ];
     }
@@ -414,9 +414,9 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           id: 'ryuuiisou',
           name: '緑一色',
           tier: 3,
-          dmgMult: 12,
+          dmgMult: 15,
           chains: 3,
-          effectText: '威力12倍・HP全回復・+1000銭・チェーン3・永続[索子/三元+12/HP+150]',
+          effectText: '⚔️×15 ⛓️+3 ❤️全快 🌟索・三元+12 ❤️+150',
         },
       ];
     }
@@ -426,9 +426,9 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           id: 'tsuuiisou',
           name: '字一色',
           tier: 3,
-          dmgMult: 12,
+          dmgMult: 15,
           chains: 3,
-          effectText: '威力12倍・全デバフ解除・+1000銭・チェーン3・永続[字牌+15/HP+150]',
+          effectText: '⚔️×15 ⛓️+3 ✨全浄化 🌟字牌+15 ❤️+150',
         },
       ];
     }
@@ -438,13 +438,16 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
   const yaku: Yaku[] = [];
 
   if (ctx.isRiichiComplete && n === 3) {
+    const isMaster = ctx.job === 'master';
     yaku.push({
       id: 'riichi',
       name: 'リーチ',
       tier: 1,
-      dmgMult: 2.5,
+      dmgMult: isMaster ? 3 : 2.5,
       chains: 2,
-      effectText: '威力2.5倍・補充50%金化・チェーン2・永続[数牌+2/HP+20]',
+      effectText: isMaster
+        ? '⚔️×3 ⛓️+2 🌈裏ドラ×3 🟨50% 🌟数牌+2 ❤️+20'
+        : '⚔️×2.5 ⛓️+2 🟨50% 🌟数牌+2 ❤️+20',
     });
   }
 
@@ -455,9 +458,9 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         id: 'chinroutou',
         name: '清老頭',
         tier: 3,
-        dmgMult: 3,
-        chains: 2,
-        effectText: '威力3倍・5T補充2〜8＆50%金化・+1000銭・チェーン2・永続[全数牌+5/HP+50]',
+        dmgMult: 5,
+        chains: 3,
+        effectText: '⚔️×5 ⛓️+3 🟨2〜8(5T) 🌟数牌+5 ❤️+50',
       });
     }
 
@@ -469,9 +472,9 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         id: 'chiniisou',
         name: '清一色',
         tier: 3,
-        dmgMult: 3,
-        chains: 2,
-        effectText: `威力3倍・5T山外から${suitName(suit)}補充・チェーン2・永続[${suitName(suit)}+8]`,
+        dmgMult: 6,
+        chains: 3,
+        effectText: `⚔️×6 ⛓️+3 🀄${suitName(suit)}(5T) 🌟${suitName(suit)}+8`,
         suit,
       });
     }
@@ -480,9 +483,9 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         id: 'sanankou',
         name: '三暗刻',
         tier: 3,
-        dmgMult: 2,
-        chains: 2,
-        effectText: '威力2倍・5T威力3倍・チェーン2・永続[全牌種+3]',
+        dmgMult: 3,
+        chains: 3,
+        effectText: '⚔️×3 ⛓️+3 🔥×3(5T) 🌟全牌+3',
       });
     }
     if (hasHonor && numberSuits.size === 1) {
@@ -490,9 +493,9 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         id: 'honiisou',
         name: '混一色',
         tier: 3,
-        dmgMult: 2,
-        chains: 2,
-        effectText: '威力2倍・5T字牌を金で補充・チェーン2・永続[数牌/字牌+4]',
+        dmgMult: 4,
+        chains: 3,
+        effectText: '⚔️×4 ⛓️+3 🟨字(5T) 🌟数・字+4',
       });
     }
     if (allShuntsu) {
@@ -500,9 +503,9 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         id: 'pinfu',
         name: '平和',
         tier: 3,
-        dmgMult: 1.5,
-        chains: 2,
-        effectText: '威力1.5倍・HP20%回復＆5T自動回復・チェーン2・永続[HP+50/数牌+3]',
+        dmgMult: 3,
+        chains: 3,
+        effectText: '⚔️×3 ⛓️+3 ❤️+20% 💚15%(5T) 🌟❤️+50・数牌+3',
       });
     }
   }
@@ -516,7 +519,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 1,
         dmgMult: 1.5,
         chains: 1,
-        effectText: '威力1.5倍・次被ダメ無効・HP15%回復・永続[HP+15/三元+2]',
+        effectText: '⚔️×1.5 ⛓️+1 🛡️無効 ❤️+15% 🌟❤️+15・三元+2',
       });
     } else if (m.kind === 32) {
       yaku.push({
@@ -525,7 +528,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 1,
         dmgMult: 2.5,
         chains: 1,
-        effectText: '威力2.5倍・永続[索子/三元+2]',
+        effectText: '⚔️×2.5 ⛓️+1 🌟索・三元+2',
       });
     } else if (m.kind === 33) {
       yaku.push({
@@ -534,7 +537,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 1,
         dmgMult: 1.5,
         chains: 1,
-        effectText: '威力1.5倍・補充3枚金化・+200銭・永続[三元+4]',
+        effectText: '⚔️×1.5 ⛓️+1 🟨+3 🌟三元+4',
       });
     }
   }
@@ -548,9 +551,9 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
           id: wId,
           name: `${kindName(m.kind)}セット`,
           tier: 1,
-          dmgMult: 1.5,
+          dmgMult: 2,
           chains: 2,
-          effectText: '威力1.5倍・チェーン2・永続[風牌+3/HP+10]',
+          effectText: '⚔️×2 ⛓️+2 🌟風+3 ❤️+10',
         });
       }
     }
@@ -565,9 +568,9 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         id: 'iipeikou',
         name: '一盃口',
         tier: 2,
-        dmgMult: 1.5,
-        chains: 1,
-        effectText: '威力1.5倍・ペア3組補充(2枚金)・永続[同順数牌+4]',
+        dmgMult: 2,
+        chains: 2,
+        effectText: '⚔️×2 ⛓️+2 🀄ペア×3 🟨+2 🌟数牌+4',
       });
     }
 
@@ -579,9 +582,9 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         id: 'nishoku_doujun',
         name: '二色同順',
         tier: 2,
-        dmgMult: 1.5,
-        chains: 1,
-        effectText: '威力1.5倍・次チェーン倍率2.5倍・永続[同順2種+3]',
+        dmgMult: 2,
+        chains: 2,
+        effectText: '⚔️×2 ⛓️+2 ⚡次×2.5 🌟2色+3',
       });
     }
 
@@ -594,9 +597,9 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         id: 'nishoku_doukou',
         name: '二色同刻',
         tier: 2,
-        dmgMult: 2,
-        chains: 1,
-        effectText: '威力2倍・次チェーン倍率3.5倍・永続[同刻2種+4]',
+        dmgMult: 2.5,
+        chains: 2,
+        effectText: '⚔️×2.5 ⛓️+2 ⚡次×3.5 🌟2色+4',
       });
     }
 
@@ -606,8 +609,8 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         name: '二暗刻',
         tier: 2,
         dmgMult: 1.5,
-        chains: 1,
-        effectText: '威力1.5倍・同牌セット補充・永続[同刻牌種+2]',
+        chains: 2,
+        effectText: '⚔️×1.5 ⛓️+2 🀄3枚組×1 🌟牌+2',
       });
     }
 
@@ -616,9 +619,9 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         id: 'chanta',
         name: 'チャンタ',
         tier: 2,
-        dmgMult: 1.5,
-        chains: 1,
-        effectText: '威力1.5倍・1/9/字牌を金化・+400銭・永続[字牌+3/HP+25]',
+        dmgMult: 2.5,
+        chains: 2,
+        effectText: '⚔️×2.5 ⛓️+2 🟨ヤオ九 🌟字+3 ❤️+25',
       });
     }
 
@@ -630,7 +633,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
         tier: 2,
         dmgMult: 2,
         chains: 1,
-        effectText: '威力2倍・永続[使用数牌+2]',
+        effectText: '⚔️×2 ⛓️+1 🌟数牌+2',
       });
     }
   }
@@ -645,7 +648,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
       tier: 1,
       dmgMult: mult,
       chains: pCount,
-      effectText: `威力${mult}倍・チェーン${pCount}（${pCount}ペア）・永続[ペア牌種+${pCount}]`,
+      effectText: `⚔️×${mult} ⛓️+${pCount} 🌟牌+${pCount}`,
     });
   }
 
@@ -657,7 +660,7 @@ export function judgeDecompositionYaku(d: Decomposition, ctx: JudgeContext = {})
       tier: 1,
       dmgMult: 3.5,
       chains: 1,
-      effectText: '威力3.5倍・チェーン1・永続[使用牌種+2/HP+10]',
+      effectText: '⚔️×3.5 ⛓️+1 🌟牌+2 ❤️+10',
     });
   }
 

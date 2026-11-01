@@ -124,13 +124,17 @@ export function effectiveTileMod(
   return 'normal';
 }
 
-/** 1枚の牌の攻撃力（装備補正・永続強化ボーナス込み） */
+/** 1枚の牌の攻撃力（装備補正・永続強化ボーナス・忍びの雀士の字牌2倍補正込み） */
 export function calcSingleTilePower(
   k: Kind,
   equips?: readonly string[],
   bonusTileAtk?: Readonly<Record<TileGroup, number>>,
+  job?: ScoreContext['job'],
 ): number {
   let p = baseTileAttack(k);
+  if (job === 'ninja' && isHonor(k)) {
+    p *= 2;
+  }
   const s = suitOf(k);
   if (s === 'm') p += 5 * countEquip(equips, 'atk_man_2') + (bonusTileAtk?.m ?? 0);
   if (s === 'p') p += 5 * countEquip(equips, 'atk_pin_2') + (bonusTileAtk?.p ?? 0);
@@ -241,6 +245,12 @@ export function evaluateDecomposition(
   ];
 
   const unlockedWinds = new Set<Kind>();
+  if (ctx.job === 'ninja') {
+    unlockedWinds.add(27);
+    unlockedWinds.add(28);
+    unlockedWinds.add(29);
+    unlockedWinds.add(30);
+  }
   if (countEquip(equips, 'wind_east') > 0) unlockedWinds.add(27);
   if (countEquip(equips, 'wind_south') > 0) unlockedWinds.add(28);
   if (countEquip(equips, 'wind_west') > 0) unlockedWinds.add(29);
@@ -264,7 +274,7 @@ export function evaluateDecomposition(
   const yaku = yakuSealed ? [] : rawYaku;
 
   const tilePower = allTiles.reduce(
-    (sum, t) => sum + calcSingleTilePower(kindOf(t), equips, ctx.bonusTileAtk),
+    (sum, t) => sum + calcSingleTilePower(kindOf(t), equips, ctx.bonusTileAtk, ctx.job),
     0,
   );
 
@@ -283,25 +293,38 @@ export function evaluateDecomposition(
   const kanCount = d.sets.filter((m) => m.type === 'kantsu').length;
   const koutsuCount = d.sets.filter(isSet).length;
   const shuntsuCount = d.sets.filter((m) => m.type === 'shuntsu').length;
+  const honorSetCount = d.sets.filter((m) => isSet(m) && isHonor(m.kind)).length;
 
-  // 特定の職業でのみ発動するセット効果：
-  // - 雀剣士(sword): 同牌セットを含む役なし攻撃が、ダメージ2倍＋補充にペアを引き込む
-  // - 麻雀医(doctor): 並びセットを含む役なし攻撃が、回復10%＋補充に2個並びを引き込む
-  // - 忍びの雀士(ninja): 字牌による同牌セットを含む1セット攻撃が、ダメージ2.5倍＋チェーン追加1
+  // 特定の職業でのみ発動するセット・役効果：
+  // - 雀剣士(sword): 役なし同牌セットで威力2倍＆ペア補充。同牌系役でも威力1.5〜2.5倍＆ペア＋金/赤牌補充
+  // - 麻雀医(doctor): 役なし並びセットで回復10%＆2連補充。並び系役で三色属性魔術（萬子並び＝炎の追撃で威力1.25倍＆赤牌補充）
+  // - 忍びの雀士(ninja): 字牌セットを含む攻撃は一撃威力4倍（チェーン追加なし）
   const isSetsOnlyNoYaku = yaku.length === 0 && d.sets.length > 0;
   const isSwordKoutsuNoYaku = ctx.job === 'sword' && isSetsOnlyNoYaku && koutsuCount > 0;
+  const isSwordKoutsuYaku = ctx.job === 'sword' && yaku.length > 0 && koutsuCount > 0;
   const isDoctorShuntsuNoYaku = ctx.job === 'doctor' && isSetsOnlyNoYaku && shuntsuCount > 0;
-  const isNinjaHonorSingleSet =
-    ctx.job === 'ninja' && d.sets.length === 1 && isSet(d.sets[0]) && isHonor(d.sets[0].kind);
+  const isDoctorManShuntsuYaku =
+    ctx.job === 'doctor' &&
+    yaku.length > 0 &&
+    d.sets.some((m) => m.type === 'shuntsu' && suitOf(m.kind) === 'm');
+  const isDoctorPinShuntsuYaku =
+    ctx.job === 'doctor' &&
+    yaku.length > 0 &&
+    d.sets.some((m) => m.type === 'shuntsu' && suitOf(m.kind) === 'p');
+  const isNinjaHonorAttack = ctx.job === 'ninja' && honorSetCount > 0;
 
   const basicShuntsuHealRate = isDoctorShuntsuNoYaku ? 0.1 * shuntsuCount : 0;
-  const basicDrawPairs = isSwordKoutsuNoYaku ? koutsuCount : 0;
+  const basicDrawPairs = isSwordKoutsuNoYaku ? koutsuCount : isSwordKoutsuYaku ? 1 : 0;
   const basicDrawSeq2 = isDoctorShuntsuNoYaku ? shuntsuCount : 0;
 
   let jobDmgMult = 1;
   if (isSwordKoutsuNoYaku) jobDmgMult *= 2;
-  if (isNinjaHonorSingleSet) jobDmgMult *= 2.5;
-  const jobBonusChains = isNinjaHonorSingleSet ? 1 : 0;
+  if (isSwordKoutsuYaku) {
+    jobDmgMult *= koutsuCount === 1 ? 1.5 : koutsuCount === 2 ? 2.0 : 2.5;
+  }
+  if (isDoctorManShuntsuYaku) jobDmgMult *= 1.25;
+  if (isNinjaHonorAttack) jobDmgMult *= 4;
+  const jobBonusChains = 0;
 
   const baseAttack = rawAttack * (1 + 0.5 * kanCount);
 
@@ -330,7 +353,7 @@ export function evaluateDecomposition(
   const chainMult = (chain + 1) * chainExtraMult;
   const rainbowMult = rainbowCount > 0 ? Math.pow(2, rainbowCount) : 1;
   const goldMult = 1 + 0.5 * goldCount;
-  const defendMult = (ctx.enemyDefendTurns ?? 0) > 0 ? 0.5 : 1;
+  const defendMult = (ctx.enemyDefendTurns ?? 0) > 0 && !isDoctorPinShuntsuYaku ? 0.5 : 1;
 
   const damage = Math.max(
     1,

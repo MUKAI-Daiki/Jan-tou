@@ -48,16 +48,26 @@ import {
   getEquipmentSellPrice,
   getJobDef,
 } from '../data/equipments';
-import { MAX_STAGE, MONSTERS } from '../data/monsters';
+import {
+  DIFFICULTIES,
+  DifficultyId,
+  MAX_STAGE,
+  MONSTERS,
+  getDifficultyDef,
+  getMonsterForDifficulty,
+} from '../data/monsters';
 
 export interface UiState {
   selectedJob: JobId;
+  selectedDifficulty: DifficultyId;
   selected: Set<TileId>;
   selectedMelds: Set<number>;
   /** 複製・サーチ用に選択された手牌ID（順序保持用） */
   selectionOrder: TileId[];
   /** 複製待機モードかどうか */
   copyMode?: boolean;
+  /** 麻雀医「数牌調合」待機モードかどうか */
+  alchemyMode?: boolean;
   /** サーチ待機モードかどうか */
   searchMode: boolean;
   /** サーチで残り牌から先に選択した牌種 */
@@ -79,6 +89,12 @@ export interface UiState {
   drawAnimActive?: boolean;
   /** 敵撃破時の点滅→ダークアウト演出中かどうか */
   isEnemyDefeatAnimating?: boolean;
+  /** ダイアログ（ライブテキスト）のタイピング描画進行中かどうか */
+  isLogAnimating?: boolean;
+  /** 職業詳細モーダルで表示中の職業ID */
+  jobDetailId?: JobId | null;
+  /** 所持装備詳細モーダルを開いているかどうか */
+  showEquipModal?: boolean;
   message: string;
   showYakuModal?: boolean;
   showWallModal?: boolean;
@@ -219,33 +235,126 @@ function renderYakuModal(state?: BattleState): string {
   </div>`;
 }
 
-export function renderTitle(showYakuModal = false, selectedJob: JobId = 'sword'): string {
+function renderJobDetailModal(jobId: JobId): string {
+  const j = getJobDef(jobId);
+  const tabs = JOBS.map(
+    (item) =>
+      `<button class="job-detail-tab${item.id === jobId ? ' active' : ''}" data-job-detail="${item.id}">${item.icon} ${esc(item.name)}</button>`,
+  ).join('');
+  const sectionsHtml = j.sections
+    .map(
+      (sec) => `<div class="job-detail-section">
+        <h3>${esc(sec.heading)}</h3>
+        <ul>
+          ${sec.items.map((it) => `<li>${esc(it)}</li>`).join('')}
+        </ul>
+      </div>`,
+    )
+    .join('');
+
+  return `<div class="overlay" data-action="close-job-detail">
+    <div class="wall-modal job-detail-modal" data-stop>
+      <div class="yaku-modal-head">
+        <h2>${j.icon} ${esc(j.name)} の能力詳細</h2>
+        <button class="btn-clear btn-sm" data-action="close-job-detail">閉じる</button>
+      </div>
+      <div class="job-detail-tabs">${tabs}</div>
+      <div class="job-detail-catch">「${esc(j.catchphrase)}」</div>
+      <div class="job-detail-body">
+        ${sectionsHtml}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderEquipDetailModal(s: BattleState): string {
+  const items =
+    s.equipments.length === 0
+      ? '<p class="muted-note">現在所持している装備はありません。</p>'
+      : s.equipments
+          .map((id, idx) => {
+            const eq = getEquipment(id);
+            const isSealed = s.sealedEquipIndices.includes(idx);
+            return `<div class="equip-detail-row rarity-${eq.rarity}${isSealed ? ' equip-sealed' : ''}">
+              <div class="equip-detail-badge rarity-${eq.rarity}">
+                <span class="eq-chip-icon">${eq.icon}</span>
+                <span class="eq-chip-kanji">${esc(eq.kanji)}</span>
+              </div>
+              <div class="equip-detail-info">
+                <div class="equip-detail-head">
+                  <span class="equip-detail-name">${esc(eq.name)}</span>
+                  <span class="equip-detail-rarity">${esc(RARITY_LABEL[eq.rarity])}</span>
+                  ${isSealed ? '<span class="badge debuff">🔒 封印中</span>' : ''}
+                </div>
+                <div class="equip-detail-desc">${esc(eq.desc)}</div>
+              </div>
+            </div>`;
+          })
+          .join('');
+
+  return `<div class="overlay" data-action="close-equip-detail">
+    <div class="wall-modal equip-detail-modal" data-stop>
+      <div class="yaku-modal-head">
+        <h2>🎒 所持装備詳細（${s.equipments.length}個）</h2>
+        <button class="btn-clear btn-sm" data-action="close-equip-detail">閉じる</button>
+      </div>
+      <div class="equip-detail-list">
+        ${items}
+      </div>
+    </div>
+  </div>`;
+}
+
+export function renderTitle(
+  showYakuModal = false,
+  selectedJob: JobId = 'sword',
+  selectedDifficulty: DifficultyId = 'beginner',
+  jobDetailId: JobId | null = null,
+): string {
   const jobCards = JOBS.map((j) => {
     const active = j.id === selectedJob ? ' active' : '';
-    return `<button class="job-card${active}" data-job="${j.id}">
+    return `<div class="job-card${active}" data-job="${j.id}" role="button" tabindex="0">
       <div class="job-head">
-        <span class="job-icon">${j.icon}</span>
-        <span class="job-name">${esc(j.name)}</span>
+        <div class="job-title-wrap">
+          <span class="job-icon">${j.icon}</span>
+          <span class="job-name">${esc(j.name)}</span>
+        </div>
+        <button type="button" class="btn-job-detail" data-job-detail="${j.id}">詳細</button>
       </div>
-      <div class="job-desc">${esc(j.detailDesc)}</div>
+      <div class="job-catchphrase">${esc(j.catchphrase)}</div>
+    </div>`;
+  }).join('');
+
+  const diffCards = DIFFICULTIES.map((d) => {
+    const active = d.id === selectedDifficulty ? ' active' : '';
+    const advCls = d.id === 'advanced' ? ' diff-advanced' : '';
+    return `<button class="diff-card${active}${advCls}" data-difficulty="${d.id}">
+      <div class="diff-head">${d.id === 'advanced' ? '🔥 ' : '🌱 '}${esc(d.name)}</div>
+      <div class="diff-desc">${esc(d.desc)}</div>
     </button>`;
   }).join('');
 
-  const cards = MONSTERS.map(
-    (m) => `<button class="monster-card" data-monster="${m.id}">
+  const cards = MONSTERS.map((baseM) => {
+    const m = getMonsterForDifficulty(baseM, selectedDifficulty);
+    return `<button class="monster-card${selectedDifficulty === 'advanced' ? ' monster-advanced' : ''}" data-monster="${m.id}">
       <div class="rank">${esc(m.rank)}</div>
       <div class="mname">${esc(m.name)}</div>
       <div class="mhp">HP ${m.hp.toLocaleString()} / 攻撃 ${m.atk}</div>
-    </button>`,
-  ).join('');
+    </button>`;
+  }).join('');
   const curJob = getJobDef(selectedJob);
+  const curDiff = getDifficultyDef(selectedDifficulty);
   return `<main class="title">
     <h1>雀闘<span class="kari">：改</span></h1>
     <p class="sub">牌を束ね、役とチェーンで${MAX_STAGE}連戦を勝ち抜け。</p>
-    <h2>1. 職業を選択（現在：${curJob.icon}${esc(curJob.name)}）</h2>
+    <h2>1. 難易度を選択（現在：${esc(curDiff.name)}）</h2>
+    <div class="diff-grid">${diffCards}</div>
+    <h2>2. 職業を選択（現在：${curJob.icon}${esc(curJob.name)}）</h2>
     <div class="job-grid">${jobCards}</div>
     <div class="start-hero">
-      <button class="btn-start-main" data-monster="${MONSTERS[0].id}">${curJob.icon}${esc(curJob.name)}で${MAX_STAGE}連戦を開始</button>
+      <button class="btn-start-main${selectedDifficulty === 'advanced' ? ' btn-start-advanced' : ''}" data-monster="${MONSTERS[0].id}">
+        ${selectedDifficulty === 'advanced' ? '🔥' : curJob.icon} 【${esc(curDiff.name)}】${esc(curJob.name)}で${MAX_STAGE}連戦を開始
+      </button>
       <button class="btn-yaku" data-action="open-yaku">役・効果一覧</button>
     </div>
     <section class="rules">
@@ -257,9 +366,10 @@ export function renderTitle(showYakuModal = false, selectedJob: JobId = 'sword')
         <li><b>カン・リーチ</b>：同種4枚で<b>カン</b>（金牌1枚補充、2セット役以上で使用可）。あと1枚で3セット揃う時は<b>リーチ</b>可（毎ターン最大3枚入替［雀老師は4枚＆被ダメ半減］・完成で<b>リーチ役</b>成立）。</li>
       </ul>
     </section>
-    <h2>2. ステージを選択して開始</h2>
+    <h2>3. ステージを選択して開始（${esc(curDiff.name)}）</h2>
     <div class="monsters">${cards}</div>
     ${showYakuModal ? renderYakuModal() : ''}
+    ${jobDetailId ? renderJobDetailModal(jobDetailId) : ''}
   </main>`;
 }
 
@@ -306,6 +416,9 @@ function renderEnemyBuffBadges(s: BattleState): string {
   if (eb.charged) badges.push('<span class="badge debuff">ためる(次通常3倍)</span>');
   if (eb.defendTurns > 0) badges.push(`<span class="badge debuff">防御(${eb.defendTurns}T)</span>`);
   if (eb.reflectTurns > 0) badges.push(`<span class="badge debuff">反射(${eb.reflectTurns}T)</span>`);
+  if ((eb.poisonTurns ?? 0) > 0) badges.push(`<span class="badge buff">☠️毒(${eb.poisonTurns}T)</span>`);
+  if ((eb.stunTurns ?? 0) > 0) badges.push(`<span class="badge buff">⚡足止め(${eb.stunTurns}T)</span>`);
+  if ((eb.weakenTurns ?? 0) > 0) badges.push(`<span class="badge buff">❄️弱体-30%(${eb.weakenTurns}T)</span>`);
   return badges.join('');
 }
 
@@ -329,7 +442,8 @@ function renderRewardModal(s: BattleState, ui: UiState): string {
   if (
     s.status !== 'reward' ||
     ui.isEnemyTurnAnimating ||
-    ui.isEnemyDefeatAnimating
+    ui.isEnemyDefeatAnimating ||
+    ui.isLogAnimating
   ) {
     return '';
   }
@@ -337,7 +451,7 @@ function renderRewardModal(s: BattleState, ui: UiState): string {
     .map((id) => {
       const eq = getEquipment(id);
       return `<button class="equip-card rarity-${eq.rarity}" data-reward="${esc(eq.id)}">
-        <div class="eq-rarity">${esc(RARITY_LABEL[eq.rarity])}</div>
+        <div class="eq-rarity">${eq.icon} ${esc(RARITY_LABEL[eq.rarity])}</div>
         <div class="eq-name">${esc(eq.name)}</div>
         <div class="eq-desc">${esc(eq.desc)}</div>
       </button>`;
@@ -360,7 +474,8 @@ function renderShopModal(s: BattleState, ui: UiState): string {
   if (
     s.status !== 'shop' ||
     ui.isEnemyTurnAnimating ||
-    ui.isEnemyDefeatAnimating
+    ui.isEnemyDefeatAnimating ||
+    ui.isLogAnimating
   ) {
     return '';
   }
@@ -514,7 +629,9 @@ export function renderBattle(v: BattleView): string {
   const activeEquips = getActiveEquips(s);
   const scoreCtx = buildScoreContext(s);
 
-  const isSpecialSelectMode = Boolean(ui.riichiSelectMode || ui.copyMode || ui.searchMode);
+  const isSpecialSelectMode = Boolean(
+    ui.riichiSelectMode || ui.copyMode || ui.searchMode || ui.alchemyMode,
+  );
   const { guideTiles, guideMelds } = !isSpecialSelectMode
     ? getYakuGuideHighlights(s.hand, s.melds, scoreCtx)
     : { guideTiles: new Set<TileId>(), guideMelds: new Set<number>() };
@@ -526,23 +643,29 @@ export function renderBattle(v: BattleView): string {
       ui.selected.size + ui.selectedMelds.size * 3 >= 3,
   );
 
+  const formatPopup = (e: BattleState['events'][number], idx: number): string => {
+    const style = `style="--popup-idx:${idx};animation-delay:${idx * 0.12}s"`;
+    if (e.type === 'money') {
+      return `<div class="popup money-popup" ${style}>${esc(e.label ?? `💰+${e.amount.toLocaleString()}`)}</div>`;
+    }
+    if (e.type === 'buff') {
+      return `<div class="popup buff-popup" ${style}>${esc(e.label ?? `🌟+${e.amount}`)}</div>`;
+    }
+    if (e.type === 'heal') {
+      return `<div class="popup heal-popup" ${style}>+${e.amount.toLocaleString()}</div>`;
+    }
+    const cls = e.target === 'monster' ? 'dmg-monster' : 'dmg-player';
+    const prefix = e.target === 'monster' ? '-' : '-';
+    return `<div class="popup ${cls}" ${style}>${prefix}${e.amount.toLocaleString()}</div>`;
+  };
+
   const monsterFx = v.events
     .filter((e) => e.target === 'monster')
-    .map(
-      (e) =>
-        `<div class="popup ${e.type === 'heal' ? 'heal-popup' : 'dmg-monster'}">${
-          e.type === 'heal' ? '+' : '-'
-        }${e.amount.toLocaleString()}</div>`,
-    )
+    .map((e, idx) => formatPopup(e, idx))
     .join('');
   const playerFx = v.events
     .filter((e) => e.target === 'player')
-    .map(
-      (e) =>
-        `<div class="popup ${e.type === 'heal' ? 'heal-popup' : 'dmg-player'}">${
-          e.type === 'heal' ? '+' : ''
-        }${e.amount.toLocaleString()}</div>`,
-    )
+    .map((e, idx) => formatPopup(e, idx))
     .join('');
   const monsterHit = v.events.some((e) => e.target === 'monster' && e.type === 'damage') ? ' hit' : '';
   const playerHit = v.events.some((e) => e.target === 'player' && e.type === 'damage') ? ' hit' : '';
@@ -557,7 +680,7 @@ export function renderBattle(v: BattleView): string {
       const tiles = m.tiles
         .map((t, j) => {
           const mod = effectiveTileMod(t, s.tileMods, activeEquips);
-          const pwr = calcSingleTilePower(m.kind, activeEquips, s.bonusTileAtk);
+          const pwr = calcSingleTilePower(m.kind, activeEquips, s.bonusTileAtk, s.job);
           return j === 0 || j === 3
             ? tileHtml(m.kind, '', 'back', { mod, power: pwr })
             : tileHtml(m.kind, '', '', { mod, power: pwr, yakuGuide: isGuide && j === 1 });
@@ -587,7 +710,7 @@ export function renderBattle(v: BattleView): string {
     .map((t) => {
       const k = kindOf(t);
       const mod = effectiveTileMod(t, s.tileMods, activeEquips);
-      const pwr = calcSingleTilePower(k, activeEquips, s.bonusTileAtk);
+      const pwr = calcSingleTilePower(k, activeEquips, s.bonusTileAtk, s.job);
       const sealed = s.sealedTiles[t] ?? 0;
       const orderIdx = ui.selectionOrder.indexOf(t);
       const isNew = drawnSet.has(t);
@@ -642,21 +765,26 @@ export function renderBattle(v: BattleView): string {
     .join('');
 
   const isModalBlockedByAnim = Boolean(
-    ui.isEnemyTurnAnimating || ui.isEnemyDefeatAnimating,
+    ui.isEnemyTurnAnimating || ui.isEnemyDefeatAnimating || ui.isLogAnimating,
   );
 
-  // 装備スキルの表示判定（現在使用可能なもののみ表示）
+  // 装備スキルおよび職業特技の表示判定
   const hasHealSkill = countActiveEquip(s, 'unlock_heal') > 0;
   const hasResetWallSkill = countActiveEquip(s, 'skill_reset_wall') > 0;
   const hasCopySkill = countActiveEquip(s, 'skill_copy') > 0;
   const hasSearchSkill = countActiveEquip(s, 'skill_search') > 0;
+  const hasAlchemySkill = s.job === 'doctor';
 
   const canUseSkillsNow = !isModalBlockedByAnim && !s.riichi && !ui.riichiSelectMode && s.status === 'playing';
   const canToggleHealNow = canUseSkillsNow && hasHealSkill;
   const canResetWallNow = canUseSkillsNow && hasResetWallSkill && s.cooldowns.resetWall === 0;
   const canCopyNow = canUseSkillsNow && hasCopySkill && s.cooldowns.copy === 0;
   const canSearchNow = canUseSkillsNow && hasSearchSkill && s.cooldowns.search === 0;
-  const hasAnyUsableSkill = canToggleHealNow || canResetWallNow || canCopyNow || canSearchNow;
+  const alchemyCd = s.cooldowns.alchemy ?? 0;
+  const canAlchemyNow = canUseSkillsNow && hasAlchemySkill && alchemyCd === 0;
+  const showAlchemyButton = canUseSkillsNow && hasAlchemySkill;
+  const hasAnyUsableSkill =
+    canToggleHealNow || canResetWallNow || canCopyNow || canSearchNow || showAlchemyButton;
 
   const canAutoSelectYaku =
     !isModalBlockedByAnim &&
@@ -672,9 +800,10 @@ export function renderBattle(v: BattleView): string {
     !ui.riichiSelectMode &&
     !ui.copyMode &&
     !ui.searchMode &&
+    !ui.alchemyMode &&
     (ui.selected.size > 0 || ui.selectedMelds.size > 0);
 
-  // 所持装備一覧
+  // 所持装備一覧（アイコン＋漢字1字のコンパクトチップ表示）
   const equipBadges =
     s.equipments.length === 0
       ? '<span class="muted-note">なし</span>'
@@ -682,17 +811,22 @@ export function renderBattle(v: BattleView): string {
           .map((id, idx) => {
             const eq = getEquipment(id);
             const isSealed = s.sealedEquipIndices.includes(idx);
-            return `<span class="equip-pill rarity-${eq.rarity}${isSealed ? ' equip-sealed' : ''}" title="${esc(
-              eq.desc,
-            )}">${esc(eq.name)}${isSealed ? '(封)' : ''}</span>`;
+            return `<button type="button" class="equip-chip rarity-${eq.rarity}${
+              isSealed ? ' equip-sealed' : ''
+            }" data-action="open-equip-detail" title="${esc(eq.name)}：${esc(eq.desc)}">
+              <span class="eq-chip-icon">${eq.icon}</span>
+              <span class="eq-chip-kanji">${esc(eq.kanji)}</span>
+              ${isSealed ? '<span class="eq-chip-seal">封</span>' : ''}
+            </button>`;
           })
           .join('');
 
+  const diffDef = getDifficultyDef(s.difficulty);
   const sc =
     !isModalBlockedByAnim && (s.status === 'won' || s.status === 'lost') ? calculateScore(s) : null;
   const result = sc
     ? `<div class="overlay"><div class="result ${s.status}">
-          <h2>${s.status === 'won' ? `全${MAX_STAGE}連戦 制覇！！` : `第${s.stage}戦 敗北……`}</h2>
+          <h2>【${esc(diffDef.name)}】${s.status === 'won' ? `全${MAX_STAGE}連戦 制覇！！` : `第${s.stage}戦 敗北……`}</h2>
           <p>到達ステージ: ${s.stage} / ${MAX_STAGE} ｜ 残りHP ${s.player.hp.toLocaleString()} / ${s.player.maxHp.toLocaleString()}</p>
           <div class="score-breakdown">
             <table>
@@ -741,7 +875,7 @@ export function renderBattle(v: BattleView): string {
   return `<main class="battle${phaseCls}">
     <section class="enemy${monsterHit}${enemyDefeatCls}">
       <div class="enemy-head">
-        <span class="stage-badge">STAGE ${s.stage} / ${MAX_STAGE}</span>
+        <span class="stage-badge${s.difficulty === 'advanced' ? ' stage-badge-advanced' : ''}">${esc(diffDef.name)} STAGE ${s.stage} / ${MAX_STAGE}</span>
         <span class="rank">${esc(s.monster.def.rank)}</span>
         <span class="mname">${esc(s.monster.def.name)}</span>
         <span class="matk">基礎攻撃力 ${s.monster.def.atk}</span>
@@ -808,7 +942,7 @@ export function renderBattle(v: BattleView): string {
                     : ''
                 }
                 <button class="btn-clear" data-action="cancel-riichi-select">戻る</button>`
-              : ui.copyMode || ui.searchMode
+              : ui.copyMode || ui.searchMode || ui.alchemyMode
                 ? '<button class="btn-clear" data-action="cancel-skill-mode">戻る</button>'
                 : `${
                     preview.canAttack
@@ -856,6 +990,13 @@ export function renderBattle(v: BattleView): string {
           ? `<div class="skill-actions">
               <span class="skill-label">スキル：</span>
               ${
+                showAlchemyButton
+                  ? `<button class="btn-skill ${ui.alchemyMode ? 'active' : ''}" data-action="skill-alchemy" ${
+                      canAlchemyNow ? '' : 'disabled'
+                    }>${canAlchemyNow ? '🧪 数牌調合' : `🧪 数牌調合(あと${alchemyCd}T)`}</button>`
+                  : ''
+              }
+              ${
                 canToggleHealNow
                   ? `<button class="btn-skill ${s.healMode ? 'active' : ''}" data-action="toggle-heal">回復変換:${
                       s.healMode ? 'ON' : 'OFF'
@@ -889,13 +1030,19 @@ export function renderBattle(v: BattleView): string {
 
     <section class="player${playerHit}">
       <div class="player-head">
-        <span>${getJobDef(s.job).icon}${esc(getJobDef(s.job).name)}</span>
+        <div class="player-job-wrap">
+          <span>${getJobDef(s.job).icon}${esc(getJobDef(s.job).name)}</span>
+          <button type="button" class="btn-clear btn-xs" data-job-detail="${s.job}">職業詳細</button>
+        </div>
         <span class="money-badge">💰 ${s.money.toLocaleString()} 銭</span>
       </div>
       ${hpBar(s.player.hp, s.player.maxHp, 'player-hp')}
       <div class="equip-bar">
         <span class="equip-label">所持装備：</span>
         <div class="equip-list">${equipBadges}</div>
+        <button type="button" class="btn-clear btn-xs btn-equip-detail" data-action="open-equip-detail">
+          🎒 装備詳細(${s.equipments.length})
+        </button>
       </div>
     </section>
     ${renderRewardModal(s, ui)}
@@ -904,6 +1051,8 @@ export function renderBattle(v: BattleView): string {
     ${ui.logOpen ? renderLogModal(s) : ''}
     ${ui.showWallModal ? renderWallModal(s, ui) : ''}
     ${ui.showYakuModal ? renderYakuModal(s) : ''}
+    ${ui.showEquipModal ? renderEquipDetailModal(s) : ''}
+    ${ui.jobDetailId ? renderJobDetailModal(ui.jobDetailId) : ''}
   </main>`;
 }
 

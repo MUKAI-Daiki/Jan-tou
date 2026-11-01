@@ -59,6 +59,11 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   padding: 12px 28px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
 }
+.btn-start-main.btn-start-advanced {
+  background: linear-gradient(135deg, #ef4444, #b91c1c);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(239, 68, 68, 0.45);
+}
 .rules {
   text-align: left;
   background: var(--panel);
@@ -77,6 +82,14 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   border: 2px solid #3d6b55;
 }
 .monster-card:hover { border-color: var(--accent); }
+.monster-card.monster-advanced {
+  background: #2b1d1d;
+  border-color: #8b3d3d;
+}
+.monster-card.monster-advanced .mhp {
+  color: #fca5a5;
+  font-weight: bold;
+}
 .monster-card .rank { color: var(--accent); font-size: 12px; }
 .monster-card .mname { font-size: 18px; margin: 4px 0; }
 .monster-card .mhp { color: var(--muted); font-size: 12px; }
@@ -190,6 +203,10 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   padding: 3px 10px;
   border-radius: 6px;
 }
+.stage-badge.stage-badge-advanced {
+  background: var(--danger);
+  color: #fff;
+}
 .enemy-head .rank { color: var(--accent); font-size: 14px; }
 .enemy-head .mname { font-size: 22px; }
 .enemy-head .matk { color: var(--muted); font-size: 14px; }
@@ -271,33 +288,44 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 .popup {
   position: absolute;
   right: 24px;
-  top: 4px;
+  top: calc(4px + var(--popup-idx, 0) * 32px);
   font-size: 26px;
   font-weight: bold;
   pointer-events: none;
-  animation: popup 1.2s ease-out forwards;
+  animation: popup 1.25s ease-out both;
   text-shadow: 0 0 4px #000;
   z-index: 15;
+  white-space: nowrap;
 }
 .dmg-monster { color: var(--accent); }
-/* プレイヤーのダメージ・回復ポップアップは目線が集中する手牌の位置に大きく表示 */
+/* プレイヤーのダメージ・回復・銭・バフポップアップは目線が集中する手牌の位置に大きく表示 */
 .hand-row .popup {
   left: 50%;
   right: auto;
-  top: -12px;
-  font-size: 38px;
+  top: calc(-14px - var(--popup-idx, 0) * 34px);
+  font-size: 30px;
   font-weight: 900;
-  animation: popupCenter 1.25s ease-out forwards;
+  animation: popupCenter 1.35s ease-out both;
 }
 .dmg-player {
   color: #ff2e2e;
-  font-size: 38px;
+  font-size: 36px;
   font-weight: 900;
   text-shadow: 0 0 6px #000, 0 2px 10px rgba(0, 0, 0, 0.95), 0 0 16px rgba(255, 46, 46, 0.85);
 }
 .heal-popup {
   color: var(--ok);
   text-shadow: 0 0 6px #000, 0 2px 10px rgba(0, 0, 0, 0.95), 0 0 14px rgba(111, 208, 140, 0.8);
+}
+.money-popup {
+  color: #fde047;
+  font-size: 28px !important;
+  text-shadow: 0 0 6px #000, 0 2px 10px rgba(0, 0, 0, 0.95), 0 0 14px rgba(250, 204, 21, 0.85);
+}
+.buff-popup {
+  color: #7dd3fc;
+  font-size: 25px !important;
+  text-shadow: 0 0 6px #000, 0 2px 10px rgba(0, 0, 0, 0.95), 0 0 14px rgba(56, 189, 248, 0.85);
 }
 @keyframes popup {
   0% { opacity: 0; transform: translateY(10px) scale(0.8); }
@@ -306,7 +334,7 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 }
 @keyframes popupCenter {
   0% { opacity: 0; transform: translate(-50%, 10px) scale(0.8); }
-  15% { opacity: 1; transform: translate(-50%, 0) scale(1.18); }
+  15% { opacity: 1; transform: translate(-50%, 0) scale(1.15); }
   100% { opacity: 0; transform: translate(-50%, -26px) scale(1); }
 }
 
@@ -539,16 +567,22 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 }
 .btn-skill.active { background: #2563eb; color: #fff; }
 
+.player-job-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .equip-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
   font-size: 13px;
-  line-height: 1.4;
+  line-height: 1.35;
 }
 .equip-label { color: var(--muted); font-weight: bold; }
-.equip-list { display: flex; gap: 6px; flex-wrap: wrap; }
+.equip-list { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
 .muted-note { color: var(--muted); font-size: 13px; }
 .equip-pill {
   padding: 2px 8px;
@@ -558,11 +592,111 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   background: #22332b;
   border: 1px solid #4b6b5a;
 }
-.equip-pill.rarity-common { border-color: #9ca3af; color: #e5e7eb; }
-.equip-pill.rarity-uncommon { border-color: #4ade80; color: #86efac; }
-.equip-pill.rarity-rare { border-color: #60a5fa; color: #93c5fd; }
-.equip-pill.rarity-legend { border-color: #facc15; color: #fde047; background: #3b2f13; }
-.equip-pill.equip-sealed { text-decoration: line-through; opacity: 0.45; }
+.equip-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: bold;
+  background: #22332b;
+  border: 1px solid #4b6b5a;
+  line-height: 1.25;
+  cursor: help;
+}
+.eq-chip-icon { font-size: 13px; }
+.eq-chip-kanji { font-size: 13px; letter-spacing: -0.02em; }
+.eq-chip-seal { font-size: 11px; margin-left: 1px; }
+.equip-pill.rarity-common,
+.equip-chip.rarity-common { border-color: #9ca3af; color: #e5e7eb; }
+.equip-pill.rarity-uncommon,
+.equip-chip.rarity-uncommon { border-color: #4ade80; color: #86efac; }
+.equip-pill.rarity-rare,
+.equip-chip.rarity-rare { border-color: #60a5fa; color: #93c5fd; }
+.equip-pill.rarity-legend,
+.equip-chip.rarity-legend { border-color: #facc15; color: #fde047; background: #3b2f13; }
+.equip-pill.equip-sealed,
+.equip-chip.equip-sealed { text-decoration: line-through; opacity: 0.45; }
+
+.btn-equip-detail {
+  padding: 2px 8px;
+  font-size: 11.5px;
+  background: #1f352c;
+  color: var(--accent);
+  border: 1px solid rgba(242, 193, 78, 0.55);
+  border-radius: 6px;
+  margin-left: 2px;
+}
+.btn-equip-detail:hover {
+  background: #2b4a3d;
+}
+
+.equip-detail-modal {
+  max-width: 580px;
+}
+.equip-detail-list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 2px;
+}
+.equip-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.equip-detail-row.rarity-common { border-color: rgba(156, 163, 175, 0.45); }
+.equip-detail-row.rarity-uncommon { border-color: rgba(74, 222, 128, 0.5); }
+.equip-detail-row.rarity-rare { border-color: rgba(96, 165, 250, 0.55); }
+.equip-detail-row.rarity-legend { border-color: rgba(250, 204, 21, 0.65); background: rgba(59, 47, 19, 0.55); }
+.equip-detail-row.equip-sealed { opacity: 0.5; }
+.equip-detail-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 48px;
+  height: 36px;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  font-size: 16px;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+.equip-detail-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+}
+.equip-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.equip-detail-name {
+  font-size: 15px;
+  font-weight: bold;
+  color: #fff;
+}
+.equip-detail-rarity {
+  font-size: 11px;
+  color: var(--accent);
+}
+.equip-detail-desc {
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.4;
+}
 
 /* ---------- 牌 ---------- */
 .tile {
@@ -1204,7 +1338,57 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   .wall-modal { padding: 14px 16px; }
 }
 
-/* ---------- 職業選択（タイトル画面） ---------- */
+/* ---------- 難易度選択・職業選択（タイトル画面） ---------- */
+.diff-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.diff-card {
+  background: var(--panel);
+  border: 2px solid #2b4a3b;
+  border-radius: 10px;
+  padding: 14px 16px;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+  transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s, background 0.12s;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.diff-card:hover {
+  transform: translateY(-2px);
+  border-color: #60a5fa;
+}
+.diff-card.active {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, rgba(242, 193, 78, 0.2) 0%, rgba(25, 42, 34, 0.96) 100%);
+  box-shadow: 0 0 18px rgba(242, 193, 78, 0.35);
+}
+.diff-card.diff-advanced.active {
+  border-color: #f87171;
+  background: linear-gradient(180deg, rgba(239, 68, 68, 0.28) 0%, rgba(45, 18, 18, 0.96) 100%);
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.45);
+}
+.diff-head {
+  font-size: 18px;
+  font-weight: bold;
+  color: #fff;
+}
+.diff-card.active .diff-head {
+  color: var(--accent);
+}
+.diff-card.diff-advanced.active .diff-head {
+  color: #fca5a5;
+}
+.diff-desc {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.42;
+}
+
 .job-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -1217,12 +1401,12 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   border-radius: 10px;
   padding: 12px 14px;
   text-align: left;
-  color: var(--ink);
+  color: var(--text);
   cursor: pointer;
   transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s, background 0.12s;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 7px;
 }
 .job-card:hover {
   transform: translateY(-2px);
@@ -1236,21 +1420,110 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
 .job-head {
   display: flex;
   align-items: center;
-  gap: 7px;
+  justify-content: space-between;
+  gap: 8px;
   font-size: 16px;
   font-weight: bold;
   color: #fff;
 }
-.job-card.active .job-head {
+.job-title-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.job-card.active .job-title-wrap {
   color: var(--accent);
 }
 .job-icon {
   font-size: 20px;
 }
-.job-desc {
-  font-size: 12.5px;
+.btn-job-detail {
+  padding: 3px 10px;
+  font-size: 11.5px;
+  border-radius: 6px;
+  background: #233d32;
+  color: #fde047;
+  border: 1px solid rgba(242, 193, 78, 0.55);
+  font-weight: bold;
+  flex-shrink: 0;
+}
+.btn-job-detail:hover {
+  background: #2f5243;
+}
+.job-catchphrase {
+  font-size: 13px;
   color: var(--muted);
-  line-height: 1.42;
+  line-height: 1.45;
+  font-weight: bold;
+}
+.job-card.active .job-catchphrase {
+  color: #e6f4ea;
+}
+
+/* ---------- 職業詳細モーダル ---------- */
+.job-detail-modal {
+  max-width: 660px;
+}
+.job-detail-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.job-detail-tab {
+  padding: 5px 11px;
+  font-size: 12.5px;
+  border-radius: 999px;
+  background: #1d2f27;
+  color: var(--muted);
+  border: 1px solid #355446;
+}
+.job-detail-tab.active {
+  background: var(--accent);
+  color: #1a1a1a;
+  border-color: var(--accent);
+}
+.job-detail-catch {
+  background: rgba(242, 193, 78, 0.14);
+  border-left: 4px solid var(--accent);
+  padding: 8px 12px;
+  border-radius: 4px 8px 8px 4px;
+  font-size: 14px;
+  font-weight: bold;
+  color: #fde047;
+  margin-bottom: 10px;
+}
+.job-detail-body {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 2px;
+}
+.job-detail-section {
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.job-detail-section h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  color: var(--accent);
+  border-bottom: 1px solid rgba(242, 193, 78, 0.25);
+  padding-bottom: 4px;
+}
+.job-detail-section ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.job-detail-section li {
+  font-size: 13px;
+  line-height: 1.48;
+  color: var(--text);
 }
 
 /* ---------- 商店モーダル ---------- */

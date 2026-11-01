@@ -257,14 +257,16 @@ describe('役と効果の判定', () => {
   });
 
   it('職業固有効果（忍びの雀士・ねこまんと・ゆかこ）が仕様通り動作する', () => {
-    // 忍びの雀士(ninja)：字牌1セット攻撃でダメージ2.5倍＋チェーン追加1（三元牌セットならチェーン2）
+    // 忍びの雀士(ninja)：字牌の基礎攻撃力2倍（10→20）＆字牌セット攻撃で一撃威力4倍＆風牌4種が最初から解禁
     const rNinjaDragon = ev('555z', [], { job: 'ninja' }); // 白セット
-    expect(rNinjaDragon.jobDmgMult).toBe(2.5);
-    expect(rNinjaDragon.gainedChains).toBe(2); // 白セット(1) + 忍び(1) = 2
+    expect(rNinjaDragon.tilePower).toBe(60); // 20 * 3
+    expect(rNinjaDragon.jobDmgMult).toBe(4);
+    expect(rNinjaDragon.gainedChains).toBe(1); // 白セット本来のチェーン1（一発のパワー重視）
 
-    const rNinjaWind = ev('111z', [], { job: 'ninja' }); // 東3枚（装備なしでも字牌1セットなのでチェーン1）
-    expect(rNinjaWind.jobDmgMult).toBe(2.5);
-    expect(rNinjaWind.gainedChains).toBe(1);
+    const rNinjaWind = ev('111z', [], { job: 'ninja' }); // 東3枚（装備なしでも初期解禁で東セット成立！）
+    expect(rNinjaWind.yaku.map((y) => y.id)).toEqual(['wind_27']);
+    expect(rNinjaWind.jobDmgMult).toBe(4);
+    expect(rNinjaWind.gainedChains).toBe(2); // 東セット本来のチェーン2（職業による追加チェーンは0）
 
     // ねこまんと(nekomanto)：ねこぱんち（含むペア数×1.5倍の威力＆ペア数分のチェーン）＋四対子強化
     const rNeko2Pairs = ev('55m77p', [], { job: 'nekomanto' });
@@ -756,7 +758,12 @@ describe('戦闘・チェーン・特殊行動・連戦システム', () => {
 
     // リーチ中に3セットが揃って攻撃すると「リーチ」役が成立し、他の役（平和など）とも複合する
     const completedHand = tiles('123m456p123s');
-    const sComp: BattleState = { ...r4.state, hand: completedHand, riichi: true };
+    const sComp: BattleState = {
+      ...r4.state,
+      hand: completedHand,
+      riichi: true,
+      monster: { ...r4.state.monster, hp: 50000, maxHp: 50000 },
+    };
     const rComp = step(sComp, { type: 'attack', tiles: completedHand, melds: [] });
     expect(rComp.error).toBeUndefined();
     expect(rComp.state.yakuHistory.map((y) => y.id)).toEqual(
@@ -810,5 +817,99 @@ describe('戦闘・チェーン・特殊行動・連戦システム', () => {
     expect(sc.yakuScore).toBe(5000);
     expect(sc.totalScore).toBeGreaterThan(5000);
     expect(sc.bonusMoneyFromScore).toBeGreaterThan(0);
+  });
+
+  it('「上級編」では全ステージで敵HP2倍・敵攻撃力2倍になる', () => {
+    const sBeg = newBattle(MONSTERS[0], 1, 'sword', 'beginner');
+    const sAdv = newBattle(MONSTERS[0], 1, 'sword', 'advanced');
+    expect(sBeg.difficulty).toBe('beginner');
+    expect(sAdv.difficulty).toBe('advanced');
+    expect(sAdv.monster.maxHp).toBe(MONSTERS[0].hp * 2);
+    expect(sAdv.monster.hp).toBe(MONSTERS[0].hp * 2);
+    expect(sAdv.monster.def.atk).toBe(MONSTERS[0].atk * 2);
+
+    // ステージ1撃破後にステージ2へ進んだ際も敵HP・攻撃力が2倍になっている
+    const strongHand = tiles('555666777z');
+    const r1 = step({ ...sAdv, hand: strongHand }, { type: 'attack', tiles: strongHand, melds: [] });
+    expect(r1.state.status).toBe('reward');
+    const r2 = step(r1.state, { type: 'choose_reward', equipId: r1.state.rewardChoices[0] });
+    expect(r2.state.stage).toBe(2);
+    expect(r2.state.monster.maxHp).toBe(MONSTERS[1].hp * 2);
+    expect(r2.state.monster.def.atk).toBe(MONSTERS[1].atk * 2);
+  });
+
+  it('4職業の能力調整（雀剣士の剛剣演武・麻雀医の属性魔術＆数牌調合・忍びの毒と足止め・雀老師の3倍リーチ＆裏ドラ開眼）が動作する', () => {
+    // 1. 雀剣士（sword）：同牌セットを含む役成立時、個数に応じて威力×1.5/2.0/2.5＆ペア補充＆補充牌を赤・金牌に昇格
+    const sSword0 = newBattle(MONSTERS[7], 11, 'sword');
+    const sSword: BattleState = { ...sSword0, hand: tiles('222m555p123s') }; // 222m 555p = タンヤオ・二暗刻（同牌セット2組）
+    const rSword = step(sSword, { type: 'attack', tiles: tiles('222m555p'), melds: [] });
+    expect(rSword.error).toBeUndefined();
+    expect(rSword.attack?.jobDmgMult).toBe(2.0);
+    expect(rSword.state.drawn).toHaveLength(6);
+    expect(kindOf(rSword.state.drawn[0])).toBe(kindOf(rSword.state.drawn[1])); // ペア補充
+    const swordMods = rSword.state.drawn.map((t) => rSword.state.tileMods[t]);
+    expect(swordMods).toContain('red');
+    expect(swordMods.filter((m) => m === 'red' || m === 'gold').length).toBeGreaterThanOrEqual(2);
+
+    // 2. 麻雀医（doctor）：固有特技「数牌調合（CT3）」＆並び系役の三色属性魔術（炎・氷・翠）
+    const sDoc0 = newBattle(MONSTERS[7], 22, 'doctor');
+    const docHand = tiles('235m456p789s'); // 2m(1), 3m(2), 5m(4) → 5mを調合すると順子が完成する4m(3)＋金牌に変化！
+    const sDoc: BattleState = {
+      ...sDoc0,
+      hand: docHand,
+      buffs: { ...sDoc0.buffs, venomTurns: 3, atkDownTurns: 2 },
+      enemyBuffs: { ...sDoc0.enemyBuffs, defendTurns: 2, reflectTurns: 2, charged: true },
+    };
+    const rAlch = step(sDoc, { type: 'skill_alchemy', targetTile: docHand[2] });
+    expect(rAlch.error).toBeUndefined();
+    expect(kindOf(rAlch.state.hand[2])).toBe(3); // 4萬(kind=3)に変化
+    expect(rAlch.state.tileMods[rAlch.state.hand[2]]).toBe('gold');
+    expect(rAlch.state.cooldowns.alchemy).toBe(3);
+
+    // 調合で完成した「234m 456p 789s（平和）」で攻撃 → 萬子(炎)・筒子(氷)・索子(翠)の3属性魔術がすべて発動！
+    const rDocAtk = step(rAlch.state, { type: 'attack', tiles: rAlch.state.hand, melds: [] });
+    expect(rDocAtk.error).toBeUndefined();
+    expect(rDocAtk.attack?.jobDmgMult).toBe(1.25); // 萬子順子：威力×1.25
+    expect(rDocAtk.state.drawn.some((t) => rDocAtk.state.tileMods[t] === 'red')).toBe(true); // 萬子順子：赤牌1枚
+    expect(rDocAtk.state.enemyBuffs.defendTurns).toBe(0); // 筒子順子：敵防御解除
+    expect(rDocAtk.state.enemyBuffs.reflectTurns).toBe(0); // 筒子順子：敵反射解除
+    expect(rDocAtk.state.enemyBuffs.charged).toBe(false); // 筒子順子：敵溜め解除
+    expect(rDocAtk.state.enemyBuffs.weakenTurns).toBe(2); // 筒子順子：敵弱体2T
+    expect(rDocAtk.state.buffs.venomTurns).toBe(1); // 索子順子：デバフ-2T浄化（3→1）
+    expect(rDocAtk.state.buffs.atkDownTurns).toBe(0); // 索子順子：デバフ-2T浄化（2→0）
+    expect(rDocAtk.state.buffs.guardBarrier).toBeGreaterThan(0); // 索子順子：最大HP15%障壁
+
+    // 3. 忍びの雀士（ninja）：風牌初期解禁＆字牌絡み役で「毒（3T）」＆風牌セット役で「足止め（1T行動スキップ）」
+    const sNinja0 = newBattle(MONSTERS[7], 33, 'ninja');
+    const sNinja: BattleState = { ...sNinja0, hand: tiles('111z234m567p') }; // 東セット（111z）
+    const rNinja1 = step(sNinja, { type: 'attack', tiles: tiles('111z'), melds: [] });
+    expect(rNinja1.error).toBeUndefined();
+    expect(rNinja1.state.enemyBuffs.poisonTurns).toBe(3);
+    expect(rNinja1.state.enemyBuffs.stunTurns).toBe(1);
+
+    // チェーン消費のため単牌攻撃して敵ターンへ進めると、毒ダメージ（最大HP10%）が入り、敵は「足止め」で行動できない！
+    const sNinjaBeforeEnemy: BattleState = { ...rNinja1.state, extraChains: 0 };
+    const hpBeforePoison = sNinjaBeforeEnemy.monster.hp;
+    const rNinja2 = step(sNinjaBeforeEnemy, {
+      type: 'attack',
+      tiles: [sNinjaBeforeEnemy.hand[0]],
+      melds: [],
+    });
+    expect(rNinja2.error).toBeUndefined();
+    expect(rNinja2.state.monster.hp).toBeLessThan(hpBeforePoison); // 毒ダメージ発生
+    expect(rNinja2.monsterTurnSteps![0].declareText).toContain('足止め');
+    expect(rNinja2.state.enemyBuffs.stunTurns).toBe(0);
+    expect(rNinja2.state.enemyBuffs.stunImmune).toBe(true);
+
+    // 4. 雀老師（master）：リーチ役ダメージ3倍＆リーチ3セット完成時に手牌3枚が虹・赤・金牌（裏ドラ）に昇格
+    const sMaster0 = newBattle(MONSTERS[7], 44, 'master');
+    const masterHand = tiles('123m456p789s');
+    const sMaster: BattleState = { ...sMaster0, hand: masterHand, riichi: true };
+    const rMaster = step(sMaster, { type: 'attack', tiles: masterHand, melds: [] });
+    expect(rMaster.error).toBeUndefined();
+    const riichiYaku = rMaster.attack?.yaku.find((y) => y.id === 'riichi');
+    expect(riichiYaku?.dmgMult).toBe(3); // 雀老師はリーチ3倍
+    expect(rMaster.attack?.usedRainbowCount).toBeGreaterThanOrEqual(1); // 裏ドラ虹牌が発動
+    expect(rMaster.attack?.redCount).toBeGreaterThanOrEqual(1); // 裏ドラ赤牌が発動
   });
 });
