@@ -5,6 +5,7 @@ import {
   LogEntry,
   MonsterTurnStep,
   buildScoreContext,
+  calculateScore,
   getRiichiMaxSwaps,
   hasAnyPlayerDebuff,
   newBattle,
@@ -22,6 +23,30 @@ import { evaluateSelection, findBestYakuCombo } from './core/score';
 import { TileGroup, isHonor, isWind, kindName, kindOf, suitOf } from './core/tile';
 import { JobId } from './data/equipments';
 import { DifficultyId, MONSTERS, MonsterDef } from './data/monsters';
+import { evaluateVeteranTitle } from './core/titles';
+import {
+  adminDeleteUser,
+  adminUpdateUser,
+  cloudState,
+  deleteVeteranById,
+  fetchAdminUsers,
+  fetchJobRanking,
+  fetchPvpCandidates,
+  initCloudSession,
+  loginAccount,
+  logoutAccount,
+  recordBattleEnd,
+  recordBattleStart,
+  registerAccount,
+  resetPasswordByBirthDate,
+  saveBattleProgress,
+  saveVeteranToSlot,
+  syncCloudAutosaveImmediate,
+  updateProfile,
+  updateVeteranMeta,
+} from './client/api';
+import { createInitialAccountUiState } from './ui/accountModals';
+import { AvatarCropperController, attachAvatarCropper } from './ui/avatarCropper';
 import { Preview, UiState, renderBattle, renderTitle } from './ui/render';
 
 const app = document.getElementById('app')!;
@@ -70,7 +95,23 @@ const ui: UiState = {
   liveLogSide: 'system',
   liveLogTransition: 'idle',
   message: '',
+  account: createInitialAccountUiState(),
 };
+
+let activeCropper: AvatarCropperController | null = null;
+const ACTIVE_SCREEN_SS_KEY = 'jantou_active_screen_v1';
+
+function pickFirstAvailableVeteranSlot(): number {
+  const used = new Map(cloudState.veterans.map((v) => [v.slotIndex, v]));
+  for (let i = 0; i < 10; i++) {
+    if (!used.has(i)) return i;
+  }
+  for (let i = 0; i < 10; i++) {
+    const v = used.get(i);
+    if (v && !v.isMarked) return i;
+  }
+  return 0;
+}
 
 function isBusyAnimating(): boolean {
   return Boolean(
@@ -603,10 +644,11 @@ function computePreview(s: BattleState): Preview {
   const ninjaNote = ninjaEffects.length > 0 ? ` ｜ 🥷${ninjaEffects.join(' ')}` : '';
 
   const jobNote = `${swordNote}${doctorNote}${ninjaNote}`;
+  const yakuSumNote = ev.yaku.length >= 2 ? ` ｜ 🀄役合算×${ev.yakuMult}` : '';
   const yakuMoneyNote = ev.yakuMoney > 0 ? ` ｜ 💰+${ev.yakuMoney}` : '';
   const goldNote = ev.goldCount > 0 ? ` ｜ 🟨+${ev.goldCount * 50}%` : '';
   const rainbowNote = ev.rainbowCount > 0 ? ` ｜ 🌈×${ev.rainbowCount}` : '';
-  const subText = `${parts.join('・')} ｜ 🛡️${guardAmount}(牌${ev.tilePower}+加${ev.setBonus})${setMultNote}${jobNote}${yakuMoneyNote}${goldNote}${rainbowNote}`;
+  const subText = `${parts.join('・')} ｜ 🛡️${guardAmount}(牌${ev.tilePower}+加${ev.setBonus})${setMultNote}${yakuSumNote}${jobNote}${yakuMoneyNote}${goldNote}${rainbowNote}`;
 
   return {
     text,
@@ -623,6 +665,10 @@ function computePreview(s: BattleState): Preview {
 }
 
 function render() {
+  if (activeCropper) {
+    activeCropper.destroy();
+    activeCropper = null;
+  }
   const activeState = displayedState ?? state;
   if (screen === 'title' || !activeState) {
     app.innerHTML = renderTitle(
@@ -630,6 +676,7 @@ function render() {
       ui.selectedJob,
       ui.selectedDifficulty,
       ui.jobDetailId ?? null,
+      ui.account,
     );
     return;
   }
@@ -694,6 +741,31 @@ function dispatch(action: Action) {
       (r.state.status === 'reward' || r.state.status === 'won');
     const justLostPlayer =
       prevState.status === 'playing' && r.state.status === 'lost';
+    const isGameEnded =
+      prevState.status === 'playing' &&
+      (r.state.status === 'won' || r.state.status === 'lost');
+
+    if (isGameEnded) {
+      sessionStorage.removeItem(ACTIVE_SCREEN_SS_KEY);
+      if (ui.account) {
+        ui.account.selectedSaveSlot = pickFirstAvailableVeteranSlot();
+        ui.account.clearSavedSlot = null;
+        ui.account.clearCommentDraft = '';
+        ui.account.clearMarkDraft = false;
+        ui.account.modalError = '';
+      }
+      void recordBattleEnd(r.state, calculateScore(r.state)).then(() => {
+        if (state && (state.status === 'won' || state.status === 'lost')) {
+          render();
+        }
+      });
+    } else {
+      const immediateSync =
+        r.state.status !== prevState.status ||
+        action.type === 'choose_reward' ||
+        action.type === 'leave_shop';
+      saveBattleProgress(r.state, immediateSync);
+    }
 
     // 敵ターンが発生した場合は、プレイヤーフェーズ -> 敵ターンフェーズを順再生
     if (r.monsterTurnSteps && r.monsterTurnSteps.length > 0 && r.afterPlayerState) {
@@ -792,6 +864,7 @@ function startBattle(def: MonsterDef, difficulty: DifficultyId = ui.selectedDiff
   stopTypewriter();
   state = newBattle(def, randomSeed(), ui.selectedJob, difficulty);
   screen = 'battle';
+  sessionStorage.setItem(ACTIVE_SCREEN_SS_KEY, 'battle');
   clearSelection();
   ui.combatPhase = 'idle';
   ui.message = '';
@@ -800,12 +873,375 @@ function startBattle(def: MonsterDef, difficulty: DifficultyId = ui.selectedDiff
   ui.showYakuModal = false;
   ui.showEquipModal = false;
   ui.jobDetailId = null;
+  if (ui.account) {
+    ui.account.clearSavedSlot = null;
+    ui.account.clearCommentDraft = '';
+    ui.account.clearMarkDraft = false;
+    ui.account.modalError = '';
+  }
+  saveBattleProgress(state, true);
+  void recordBattleStart(ui.selectedJob, difficulty);
   render();
   enqueueLogs(state.log);
 }
 
+function resumeSavedBattle() {
+  const saved = cloudState.activeSave?.state;
+  if (!saved) return;
+  stopAutoRiichiTimer();
+  stopTypewriter();
+  state = saved;
+  ui.selectedJob = saved.job;
+  ui.selectedDifficulty = saved.difficulty;
+  screen = 'battle';
+  sessionStorage.setItem(ACTIVE_SCREEN_SS_KEY, 'battle');
+  clearSelection();
+  ui.combatPhase = 'idle';
+  ui.message = '';
+  ui.logOpen = false;
+  ui.showWallModal = false;
+  ui.showYakuModal = false;
+  ui.showEquipModal = false;
+  ui.jobDetailId = null;
+  const lastLog = saved.log[saved.log.length - 1];
+  ui.liveLogText = lastLog ? lastLog.text : '中断データから再開しました';
+  ui.liveLogSide = lastLog ? lastLog.side : 'system';
+  render();
+  checkAndScheduleAutoRiichi();
+}
+
 app.addEventListener('click', (e) => {
   const target = e.target as HTMLElement;
+  const accEl = target.closest<HTMLElement>('[data-acc-action]');
+  if (accEl?.dataset.accAction && ui.account) {
+    const act = accEl.dataset.accAction;
+    if (act === 'close-modal') {
+      if (accEl.classList.contains('overlay') && target.closest('[data-stop]')) return;
+      ui.account.activeModal = null;
+      ui.account.modalError = '';
+      ui.account.modalSuccess = '';
+      ui.account.editingVeteranId = null;
+      render();
+      return;
+    }
+    if (act === 'open-auth') {
+      ui.account.activeModal = 'auth';
+      ui.account.authTab = 'login';
+      ui.account.croppedAvatarDraft = '';
+      ui.account.modalError = '';
+      ui.account.modalSuccess = '';
+      render();
+      return;
+    }
+    if (act === 'open-profile') {
+      ui.account.activeModal = 'profile';
+      ui.account.croppedAvatarDraft = cloudState.user?.avatarData ?? '';
+      ui.account.modalError = '';
+      ui.account.modalSuccess = '';
+      render();
+      return;
+    }
+    if (act === 'open-history') {
+      ui.account.activeModal = 'history';
+      ui.account.modalError = '';
+      ui.account.modalSuccess = '';
+      render();
+      return;
+    }
+    if (act === 'open-veterans') {
+      ui.account.activeModal = 'veterans';
+      ui.account.modalError = '';
+      ui.account.modalSuccess = '';
+      render();
+      void fetchPvpCandidates().then(() => {
+        if (ui.account?.activeModal === 'veterans') render();
+      });
+      return;
+    }
+    if (act === 'open-admin') {
+      ui.account.activeModal = 'admin';
+      ui.account.modalError = '';
+      ui.account.modalSuccess = '';
+      render();
+      void fetchAdminUsers()
+        .then(() => {
+          if (ui.account?.activeModal === 'admin') render();
+        })
+        .catch((err) => {
+          if (ui.account) {
+            ui.account.modalError = err instanceof Error ? err.message : '取得エラー';
+            render();
+          }
+        });
+      return;
+    }
+    if (act === 'switch-auth-tab') {
+      const tab = accEl.dataset.tab as 'login' | 'register' | 'reset';
+      if (tab) {
+        ui.account.authTab = tab;
+        ui.account.modalError = '';
+        ui.account.modalSuccess = '';
+        render();
+      }
+      return;
+    }
+    if (act === 'switch-history-tab') {
+      const tab = accEl.dataset.tab as 'jobs' | 'equips' | 'yaku';
+      if (tab) {
+        ui.account.historyTab = tab;
+        render();
+      }
+      return;
+    }
+    if (act === 'switch-veterans-tab') {
+      const tab = accEl.dataset.tab as 'my' | 'pvp';
+      if (tab) {
+        ui.account.veteransTab = tab;
+        ui.account.modalError = '';
+        ui.account.modalSuccess = '';
+        render();
+        if (tab === 'pvp') {
+          void fetchPvpCandidates().then(() => {
+            if (ui.account?.activeModal === 'veterans') render();
+          });
+        }
+      }
+      return;
+    }
+    if (act === 'set-rank-tab') {
+      const rTab = accEl.dataset.rankTab as 'personal' | 'global';
+      if (rTab) {
+        ui.account.jobRankingTab = rTab;
+        render();
+        if (ui.jobDetailId) {
+          void fetchJobRanking(ui.jobDetailId).then(() => {
+            if (ui.jobDetailId) render();
+          });
+        }
+      }
+      return;
+    }
+    if (act === 'logout') {
+      void logoutAccount().then(() => {
+        sessionStorage.removeItem(ACTIVE_SCREEN_SS_KEY);
+        render();
+      });
+      return;
+    }
+    if (act === 'resume-autosave') {
+      resumeSavedBattle();
+      return;
+    }
+    if (act === 'discard-autosave') {
+      saveBattleProgress(null, true);
+      sessionStorage.removeItem(ACTIVE_SCREEN_SS_KEY);
+      render();
+      return;
+    }
+    if (act === 'select-save-slot') {
+      const slot = Number(accEl.dataset.slot);
+      if (Number.isInteger(slot) && slot >= 0 && slot <= 9) {
+        ui.account.selectedSaveSlot = slot;
+        ui.account.modalError = '';
+        render();
+      }
+      return;
+    }
+    if (act === 'save-clear-veteran' && state && state.status === 'won') {
+      const commentInput = document.getElementById('clear-vet-comment') as HTMLInputElement | null;
+      const markInput = document.getElementById('clear-vet-mark') as HTMLInputElement | null;
+      const comment = commentInput ? commentInput.value.trim() : ui.account.clearCommentDraft;
+      const isMarked = markInput ? markInput.checked : ui.account.clearMarkDraft;
+      ui.account.clearCommentDraft = comment;
+      ui.account.clearMarkDraft = isMarked;
+      const sc = calculateScore(state);
+      const titleEval = evaluateVeteranTitle(state, sc);
+      const slotIndex = ui.account.selectedSaveSlot;
+
+      void saveVeteranToSlot({
+        slotIndex,
+        state,
+        titleName: titleEval.titleName,
+        totalScore: sc.totalScore,
+        comment,
+        isMarked,
+      })
+        .then(() => {
+          if (ui.account) {
+            ui.account.clearSavedSlot = slotIndex;
+            ui.account.modalError = '';
+            render();
+          }
+        })
+        .catch((err) => {
+          if (ui.account) {
+            ui.account.modalError = err instanceof Error ? err.message : '保存に失敗しました';
+            render();
+          }
+        });
+      return;
+    }
+    if (act === 'toggle-vet-mark') {
+      const vetId = accEl.dataset.vetId;
+      const curMarked = accEl.dataset.marked === '1';
+      if (vetId) {
+        void updateVeteranMeta(vetId, { isMarked: !curMarked })
+          .then(() => render())
+          .catch((err) => {
+            if (ui.account) {
+              ui.account.modalError = err instanceof Error ? err.message : '更新エラー';
+              render();
+            }
+          });
+      }
+      return;
+    }
+    if (act === 'start-vet-edit') {
+      const vetId = accEl.dataset.vetId;
+      if (vetId) {
+        ui.account.editingVeteranId = vetId;
+        ui.account.modalError = '';
+        render();
+      }
+      return;
+    }
+    if (act === 'cancel-vet-edit') {
+      ui.account.editingVeteranId = null;
+      render();
+      return;
+    }
+    if (act === 'save-vet-comment') {
+      const vetId = accEl.dataset.vetId;
+      if (vetId) {
+        const inputEl = document.getElementById(`vet-edit-input-${vetId}`) as HTMLInputElement | null;
+        const nextComment = inputEl ? inputEl.value.trim() : '';
+        void updateVeteranMeta(vetId, { comment: nextComment })
+          .then(() => {
+            if (ui.account) {
+              ui.account.editingVeteranId = null;
+              ui.account.modalError = '';
+              render();
+            }
+          })
+          .catch((err) => {
+            if (ui.account) {
+              ui.account.modalError = err instanceof Error ? err.message : '更新エラー';
+              render();
+            }
+          });
+      }
+      return;
+    }
+    if (act === 'delete-vet') {
+      const vetId = accEl.dataset.vetId;
+      if (vetId) {
+        void deleteVeteranById(vetId)
+          .then(() => {
+            if (ui.account) {
+              ui.account.modalError = '';
+              render();
+            }
+          })
+          .catch((err) => {
+            if (ui.account) {
+              ui.account.modalError = err instanceof Error ? err.message : '削除エラー';
+              render();
+            }
+          });
+      }
+      return;
+    }
+    if (act === 'admin-refresh') {
+      void fetchAdminUsers().then(() => render());
+      return;
+    }
+    if (act === 'admin-reset-pass') {
+      const userId = accEl.dataset.userId;
+      const loginId = accEl.dataset.loginId ?? '';
+      if (userId) {
+        const newPassword = window.prompt(
+          `ユーザー @${loginId} の新しいパスワード（6文字以上）を入力してください：`,
+        );
+        if (newPassword && newPassword.trim().length >= 6) {
+          void adminUpdateUser(userId, { newPassword: newPassword.trim() })
+            .then(() => {
+              if (ui.account) {
+                ui.account.modalSuccess = `@${loginId} のパスワードを再設定しました`;
+                ui.account.modalError = '';
+                render();
+              }
+            })
+            .catch((err) => {
+              if (ui.account) {
+                ui.account.modalError = err instanceof Error ? err.message : '更新失敗';
+                render();
+              }
+            });
+        }
+      }
+      return;
+    }
+    if (act === 'admin-reset-profile') {
+      const userId = accEl.dataset.userId;
+      const loginId = accEl.dataset.loginId ?? '';
+      if (userId && window.confirm(`@${loginId} のニックネーム・アイコン・コメントを初期化しますか？`)) {
+        void adminUpdateUser(userId, {
+          nickname: loginId,
+          comment: '',
+          clearAvatar: true,
+        })
+          .then(() => {
+            if (ui.account) {
+              ui.account.modalSuccess = `@${loginId} のプロフィールを初期化しました`;
+              render();
+            }
+          })
+          .catch((err) => {
+            if (ui.account) {
+              ui.account.modalError = err instanceof Error ? err.message : '更新失敗';
+              render();
+            }
+          });
+      }
+      return;
+    }
+    if (act === 'admin-toggle-suspend') {
+      const userId = accEl.dataset.userId;
+      const isSuspended = accEl.dataset.suspended === '1';
+      if (userId) {
+        void adminUpdateUser(userId, { isSuspended: !isSuspended })
+          .then(() => render())
+          .catch((err) => {
+            if (ui.account) {
+              ui.account.modalError = err instanceof Error ? err.message : '更新失敗';
+              render();
+            }
+          });
+      }
+      return;
+    }
+    if (act === 'admin-delete-user') {
+      const userId = accEl.dataset.userId;
+      const loginId = accEl.dataset.loginId ?? '';
+      if (userId && window.confirm(`ユーザー @${loginId} を完全に削除しますか？この操作は取り消せません。`)) {
+        void adminDeleteUser(userId)
+          .then(() => {
+            if (ui.account) {
+              ui.account.modalSuccess = `@${loginId} を削除しました`;
+              render();
+            }
+          })
+          .catch((err) => {
+            if (ui.account) {
+              ui.account.modalError = err instanceof Error ? err.message : '削除失敗';
+              render();
+            }
+          });
+      }
+      return;
+    }
+  }
+
   const diffEl = target.closest<HTMLElement>('[data-difficulty]');
   if (diffEl?.dataset.difficulty) {
     ui.selectedDifficulty = diffEl.dataset.difficulty as DifficultyId;
@@ -815,8 +1251,12 @@ app.addEventListener('click', (e) => {
 
   const jobDetailEl = target.closest<HTMLElement>('[data-job-detail]');
   if (jobDetailEl?.dataset.jobDetail) {
-    ui.jobDetailId = jobDetailEl.dataset.jobDetail as JobId;
+    const jId = jobDetailEl.dataset.jobDetail as JobId;
+    ui.jobDetailId = jId;
     render();
+    void fetchJobRanking(jId).then(() => {
+      if (ui.jobDetailId === jId) render();
+    });
     return;
   }
 
@@ -1237,9 +1677,21 @@ app.addEventListener('click', (e) => {
     case 'retry':
       startBattle(MONSTERS[0], state?.difficulty ?? ui.selectedDifficulty);
       break;
+    case 'suspend-to-title':
+      stopAutoRiichiTimer();
+      stopTypewriter();
+      if (state && state.status !== 'won' && state.status !== 'lost') {
+        saveBattleProgress(state, true);
+      }
+      sessionStorage.removeItem(ACTIVE_SCREEN_SS_KEY);
+      screen = 'title';
+      state = null;
+      render();
+      break;
     case 'title':
       stopAutoRiichiTimer();
       stopTypewriter();
+      sessionStorage.removeItem(ACTIVE_SCREEN_SS_KEY);
       screen = 'title';
       state = null;
       render();
@@ -1247,4 +1699,207 @@ app.addEventListener('click', (e) => {
   }
 });
 
+// フォーム送信イベント（ログイン・新規登録・パスワード再設定・プロフィール更新）
+app.addEventListener('submit', (e) => {
+  const form = e.target as HTMLFormElement;
+  if (!ui.account) return;
+
+  if (form.id === 'auth-login-form') {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const loginId = String(fd.get('loginId') ?? '').trim();
+    const password = String(fd.get('password') ?? '');
+    ui.account.modalError = '';
+    void loginAccount(loginId, password)
+      .then(() => {
+        if (ui.account) {
+          ui.account.activeModal = null;
+          ui.account.modalError = '';
+        }
+        render();
+      })
+      .catch((err) => {
+        if (ui.account) {
+          ui.account.modalError = err instanceof Error ? err.message : 'ログインに失敗しました';
+          render();
+        }
+      });
+    return;
+  }
+
+  if (form.id === 'auth-register-form') {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const loginId = String(fd.get('loginId') ?? '').trim();
+    const password = String(fd.get('password') ?? '');
+    const birthDate = String(fd.get('birthDate') ?? '').trim();
+    const nickname = String(fd.get('nickname') ?? '').trim();
+    const comment = String(fd.get('comment') ?? '').trim();
+    const avatarData = activeCropper
+      ? activeCropper.getCroppedDataUrl()
+      : ui.account.croppedAvatarDraft;
+
+    ui.account.modalError = '';
+    void registerAccount({
+      loginId,
+      password,
+      birthDate,
+      nickname,
+      avatarData,
+      comment,
+    })
+      .then(() => {
+        if (ui.account) {
+          ui.account.activeModal = null;
+          ui.account.modalError = '';
+        }
+        render();
+      })
+      .catch((err) => {
+        if (ui.account) {
+          ui.account.modalError = err instanceof Error ? err.message : '登録に失敗しました';
+          render();
+        }
+      });
+    return;
+  }
+
+  if (form.id === 'auth-reset-form') {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const loginId = String(fd.get('loginId') ?? '').trim();
+    const birthDate = String(fd.get('birthDate') ?? '').trim();
+    const newPassword = String(fd.get('newPassword') ?? '');
+
+    ui.account.modalError = '';
+    void resetPasswordByBirthDate({ loginId, birthDate, newPassword })
+      .then(() => {
+        if (ui.account) {
+          ui.account.activeModal = null;
+          ui.account.modalError = '';
+        }
+        render();
+      })
+      .catch((err) => {
+        if (ui.account) {
+          ui.account.modalError =
+            err instanceof Error ? err.message : 'パスワード再設定に失敗しました';
+          render();
+        }
+      });
+    return;
+  }
+
+  if (form.id === 'profile-edit-form') {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const nickname = String(fd.get('nickname') ?? '').trim();
+    const comment = String(fd.get('comment') ?? '').trim();
+    const avatarData = activeCropper
+      ? activeCropper.getCroppedDataUrl()
+      : ui.account.croppedAvatarDraft || cloudState.user?.avatarData || '';
+
+    ui.account.modalError = '';
+    void updateProfile({ nickname, avatarData, comment })
+      .then(() => {
+        if (ui.account) {
+          ui.account.activeModal = null;
+          ui.account.modalError = '';
+        }
+        render();
+      })
+      .catch((err) => {
+        if (ui.account) {
+          ui.account.modalError =
+            err instanceof Error ? err.message : 'プロフィール更新に失敗しました';
+          render();
+        }
+      });
+  }
+});
+
+// アイコン画像選択 → 円形トリミング起動
+app.addEventListener('change', (e) => {
+  const target = e.target as HTMLElement;
+  if (target.id === 'avatar-file-input' && ui.account) {
+    const fileInput = target as HTMLInputElement;
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result ?? '');
+      const stageWrap = document.getElementById('cropper-stage-wrap');
+      const canvas = document.getElementById('avatar-crop-canvas') as HTMLCanvasElement | null;
+      const slider = document.getElementById('avatar-zoom-slider') as HTMLInputElement | null;
+      if (!stageWrap || !canvas || !slider) return;
+      stageWrap.style.display = 'flex';
+      if (activeCropper) {
+        activeCropper.destroy();
+        activeCropper = null;
+      }
+      void attachAvatarCropper(canvas, slider, dataUrl, (cropped) => {
+        if (ui.account) {
+          ui.account.croppedAvatarDraft = cropped;
+        }
+        const previewContainer = document.querySelector('.cropper-left .user-avatar');
+        if (previewContainer) {
+          previewContainer.classList.remove('av-fallback');
+          previewContainer.innerHTML = `<img src="${cropped}" alt="Preview" />`;
+        }
+      }).then((ctrl) => {
+        activeCropper = ctrl;
+      });
+    };
+    reader.readAsDataURL(file);
+    return;
+  }
+
+  if (target.id === 'clear-vet-mark' && ui.account) {
+    ui.account.clearMarkDraft = (target as HTMLInputElement).checked;
+  }
+});
+
+app.addEventListener('input', (e) => {
+  const target = e.target as HTMLElement;
+  if (target.id === 'clear-vet-comment' && ui.account) {
+    ui.account.clearCommentDraft = (target as HTMLInputElement).value;
+    return;
+  }
+  if (target.id === 'admin-search-input' && ui.account) {
+    const input = target as HTMLInputElement;
+    const pos = input.selectionStart ?? input.value.length;
+    ui.account.adminSearchQuery = input.value;
+    render();
+    const nextInput = document.getElementById('admin-search-input') as HTMLInputElement | null;
+    if (nextInput) {
+      nextInput.focus();
+      nextInput.setSelectionRange(pos, pos);
+    }
+  }
+});
+
+// 不意の更新・ページ離脱・タブ切り替え時のオートセーブ即時フラッシュ
+window.addEventListener('pagehide', () => {
+  if (state && state.status !== 'won' && state.status !== 'lost') {
+    saveBattleProgress(state, false);
+    void syncCloudAutosaveImmediate(state, true);
+  }
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && state && state.status !== 'won' && state.status !== 'lost') {
+    saveBattleProgress(state, false);
+    void syncCloudAutosaveImmediate(state, true);
+  }
+});
+
 render();
+
+void initCloudSession().then(() => {
+  // 直前にバトル画面にいて（F5更新・戻る等）、有効なオートセーブがある場合は自動復帰
+  if (sessionStorage.getItem(ACTIVE_SCREEN_SS_KEY) === 'battle' && cloudState.activeSave?.state) {
+    resumeSavedBattle();
+  } else {
+    render();
+  }
+});

@@ -7,11 +7,21 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "cf:login": "npx wrangler login",
+    "cf:whoami": "npx wrangler whoami",
+    "db:create": "npx wrangler d1 create jantou-db",
+    "db:migrate:local": "npx wrangler d1 migrations apply jantou-db --local",
+    "db:migrate:remote": "npx wrangler d1 migrations apply jantou-db --remote",
+    "deploy": "npm run build && npx wrangler deploy"
   },
   "devDependencies": {
+    "@types/node": "^26.6.6",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
     "vitest": "^5.0.5"
+  },
+  "dependencies": {
+    "hono": "^4.13.16"
   }
 }

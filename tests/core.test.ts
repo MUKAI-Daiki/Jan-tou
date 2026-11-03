@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { BattleState, HAND_SIZE, calculateScore, newBattle, step } from '../src/core/battle';
+import {
+  BattleState,
+  HAND_SIZE,
+  calculateScore,
+  getMonsterEffectiveAtk,
+  getMonsterEnrageLevel,
+  getMonsterEnrageMult,
+  getTurnsUntilNextEnrage,
+  newBattle,
+  step,
+} from '../src/core/battle';
 import {
   canDeclareRiichi,
   decompose,
@@ -138,11 +148,12 @@ describe('新ダメージ計算とセットボーナス・職業効果', () => {
     expect(evaluateSelection(tiles('123m'), [kan]).valid).toBe(false);
     // 二暗刻＋タンヤオ（2セット役）なら使用可能：
     // 牌攻撃力: 2筒×4(8) + 3索×3(9) = 17, ボーナス: カン(30) + 同牌(20) = 50 → 計67
-    // カン1つ含みで基本攻撃力 ×1.5 = 100.5, 二暗刻 ×1.5 × タンヤオ ×2 = ×3, 2セット倍率 ×2 → 603
+    // カン1つ含みで基本攻撃力 ×1.5 = 100.5, 役倍率加算合算: 二暗刻(1.5)+タンヤオ(2.0) = 1 + 0.5 + 1.0 = ×2.5, 2セット倍率 ×2 → 100.5 * 2 * 2.5 = 502.5 → 503
     const r = evaluateSelection(tiles('333s'), [kan]);
     expect(r.valid).toBe(true);
     expect(r.yaku.map((y) => y.name)).toEqual(expect.arrayContaining(['二暗刻', 'タンヤオ']));
-    expect(r.damage).toBe(603);
+    expect(r.yakuMult).toBe(2.5);
+    expect(r.damage).toBe(503);
   });
 
   it('役なし攻撃は3枚まで、役攻撃時は役に絡まない牌・セットは選択不可、役選択ガイドが機能する', () => {
@@ -220,6 +231,20 @@ describe('役と効果の判定', () => {
     expect(yakuNames('555666777z')).toEqual(['大三元']);
     expect(yakuNames('234s666s666z')).toEqual(['緑一色']);
     expect(yakuNames('111222555z')).toEqual(['字一色']);
+  });
+
+  it('複合役成立時は役倍率が加算方式（1.0 + 各役の増加分）で合算され、過剰な乗算インフレを防ぐ', () => {
+    // 平和(3.0) + 清一色(6.0)
+    // 乗算なら 3 * 6 = 18倍、加算なら 1 + (3 - 1) + (6 - 1) = 8.0倍
+    const r1 = ev('123m456m789m');
+    expect(r1.yaku.map((y) => y.name).sort()).toEqual(['平和', '清一色'].sort());
+    expect(r1.yakuMult).toBe(8.0);
+
+    // 三暗刻(3.0) + タンヤオ(2.0) + 二暗刻(1.5)
+    // 加算なら 1 + (3 - 1) + (2 - 1) + (1.5 - 1) = 1 + 2 + 1 + 0.5 = 4.5倍
+    const r2 = ev('222m555p888s');
+    expect(r2.yaku.map((y) => y.name).sort()).toEqual(['三暗刻', 'タンヤオ', '二暗刻'].sort());
+    expect(r2.yakuMult).toBe(4.5);
   });
 
   it('YAKU_CATALOGのすべての具体例が対応する役として成立する', () => {
@@ -911,5 +936,83 @@ describe('戦闘・チェーン・特殊行動・連戦システム', () => {
     expect(riichiYaku?.dmgMult).toBe(3); // 雀老師はリーチ3倍
     expect(rMaster.attack?.usedRainbowCount).toBeGreaterThanOrEqual(1); // 裏ドラ虹牌が発動
     expect(rMaster.attack?.redCount).toBeGreaterThanOrEqual(1); // 裏ドラ赤牌が発動
+  });
+
+  describe('敵の激昂仕様（5ターンごとに攻撃力1.5倍・遅延防止）', () => {
+    it('ターン数に応じた激昂段階・倍率・カウントダウン計算が正しい', () => {
+      // 1〜5ターン目は通常（激昂Lv0, 倍率1.0）
+      for (let t = 1; t <= 5; t++) {
+        expect(getMonsterEnrageLevel(t)).toBe(0);
+        expect(getMonsterEnrageMult(t)).toBe(1);
+        expect(getTurnsUntilNextEnrage(t)).toBe(6 - t);
+        expect(getMonsterEffectiveAtk(20, t)).toBe(20);
+      }
+
+      // 6〜10ターン目は激昂Lv1（倍率1.5）
+      for (let t = 6; t <= 10; t++) {
+        expect(getMonsterEnrageLevel(t)).toBe(1);
+        expect(getMonsterEnrageMult(t)).toBe(1.5);
+        expect(getTurnsUntilNextEnrage(t)).toBe(11 - t);
+        expect(getMonsterEffectiveAtk(20, t)).toBe(30); // 20 * 1.5 = 30
+      }
+
+      // 11〜15ターン目は激昂Lv2（倍率2.25）
+      for (let t = 11; t <= 15; t++) {
+        expect(getMonsterEnrageLevel(t)).toBe(2);
+        expect(getMonsterEnrageMult(t)).toBe(2.25);
+        expect(getTurnsUntilNextEnrage(t)).toBe(16 - t);
+        expect(getMonsterEffectiveAtk(20, t)).toBe(45); // 20 * 2.25 = 45
+      }
+
+      // 16〜20ターン目は激昂Lv3（倍率3.38）
+      expect(getMonsterEnrageLevel(16)).toBe(3);
+      expect(getMonsterEnrageMult(16)).toBe(3.38);
+      expect(getMonsterEffectiveAtk(20, 16)).toBe(68); // 20 * 3.38 = 67.6 -> 68
+    });
+
+    it('戦闘中のターン経過で5T終了時に激昂ログとバフイベントが発火し、敵攻撃力が増加する', () => {
+      let s = newBattle(MONSTERS[0], 12345);
+      // プレイヤーが倒れないよう十分なHPを付与
+      s.player.hp = 9999;
+      s.player.maxHp = 9999;
+      expect(s.turn).toBe(1);
+
+      // 1〜5ターン目を適当な単牌ガードで経過させる（遅延ガード戦略）
+      for (let i = 1; i <= 4; i++) {
+        const r = step(s, { type: 'guard', tiles: [s.hand[0]], melds: [] });
+        expect(r.error).toBeUndefined();
+        s = r.state;
+        expect(s.turn).toBe(i + 1);
+        // まだ激昂していない
+        expect(getMonsterEnrageLevel(s.turn)).toBe(0);
+      }
+      expect(s.turn).toBe(5);
+
+      // 5ターン目のガードを実行 -> ターン終了時に激昂発火して6ターン目へ突入
+      const r5 = step(s, { type: 'guard', tiles: [s.hand[0]], melds: [] });
+      expect(r5.error).toBeUndefined();
+      s = r5.state;
+      expect(s.turn).toBe(6);
+      expect(getMonsterEnrageLevel(s.turn)).toBe(1);
+      expect(getMonsterEnrageMult(s.turn)).toBe(1.5);
+
+      // 激昂アナウンスログとイベントが記録されている
+      const enrageLog = s.log.find((l) => l.text.includes('激昂した'));
+      expect(enrageLog).toBeDefined();
+      expect(enrageLog?.text).toContain('1.5倍');
+
+      const enrageEvent = s.events.find((e) => e.type === 'buff' && e.target === 'monster');
+      expect(enrageEvent).toBeDefined();
+      expect(enrageEvent?.label).toContain('激昂×1.5');
+
+      // 6ターン目の敵攻撃時に激昂補正が反映される
+      const r6 = step(s, { type: 'guard', tiles: [s.hand[0]], melds: [] });
+      expect(r6.error).toBeUndefined();
+      // 敵の行動ステップで激昂効果表記が含まれる
+      const hitStep = r6.monsterTurnSteps?.find((st) => st.effectText.includes('💥'));
+      if (hitStep) {
+        expect(hitStep.effectText).toContain('💢×1.5');
+      }
+    });
   });
 });

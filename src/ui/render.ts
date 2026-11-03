@@ -6,7 +6,11 @@ import {
   calculateScore,
   countActiveEquip,
   getActiveEquips,
+  getMonsterEffectiveAtk,
+  getMonsterEnrageLevel,
+  getMonsterEnrageMult,
   getRiichiMaxSwaps,
+  getTurnsUntilNextEnrage,
   hasAnyPlayerDebuff,
   wallCounts,
 } from '../core/battle';
@@ -56,6 +60,15 @@ import {
   getDifficultyDef,
   getMonsterForDifficulty,
 } from '../data/monsters';
+import {
+  AccountUiState,
+  createInitialAccountUiState,
+  renderAccountModals,
+  renderAccountTopBar,
+  renderClearVeteranSaveSection,
+  renderJobStatsAndTop3Html,
+  renderResumeBanner,
+} from './accountModals';
 
 export interface UiState {
   selectedJob: JobId;
@@ -98,6 +111,7 @@ export interface UiState {
   message: string;
   showYakuModal?: boolean;
   showWallModal?: boolean;
+  account?: AccountUiState;
 }
 
 export interface BattleView {
@@ -235,12 +249,14 @@ function renderYakuModal(state?: BattleState): string {
   </div>`;
 }
 
-function renderJobDetailModal(jobId: JobId): string {
+function renderJobDetailModal(jobId: JobId, accountUi?: AccountUiState): string {
   const j = getJobDef(jobId);
+  const acc = accountUi ?? createInitialAccountUiState();
   const tabs = JOBS.map(
     (item) =>
       `<button class="job-detail-tab${item.id === jobId ? ' active' : ''}" data-job-detail="${item.id}">${item.icon} ${esc(item.name)}</button>`,
   ).join('');
+  const statsAndTop3Html = renderJobStatsAndTop3Html(jobId, acc);
   const sectionsHtml = j.sections
     .map(
       (sec) => `<div class="job-detail-section">
@@ -255,12 +271,13 @@ function renderJobDetailModal(jobId: JobId): string {
   return `<div class="overlay" data-action="close-job-detail">
     <div class="wall-modal job-detail-modal" data-stop>
       <div class="yaku-modal-head">
-        <h2>${j.icon} ${esc(j.name)} の能力詳細</h2>
+        <h2>${j.icon} ${esc(j.name)} の能力詳細・戦績</h2>
         <button class="btn-clear btn-sm" data-action="close-job-detail">閉じる</button>
       </div>
       <div class="job-detail-tabs">${tabs}</div>
       <div class="job-detail-catch">「${esc(j.catchphrase)}」</div>
       <div class="job-detail-body">
+        ${statsAndTop3Html}
         ${sectionsHtml}
       </div>
     </div>
@@ -310,7 +327,9 @@ export function renderTitle(
   selectedJob: JobId = 'sword',
   selectedDifficulty: DifficultyId = 'beginner',
   jobDetailId: JobId | null = null,
+  accountUi?: AccountUiState,
 ): string {
+  const acc = accountUi ?? createInitialAccountUiState();
   const jobCards = JOBS.map((j) => {
     const active = j.id === selectedJob ? ' active' : '';
     return `<div class="job-card${active}" data-job="${j.id}" role="button" tabindex="0">
@@ -319,7 +338,7 @@ export function renderTitle(
           <span class="job-icon">${j.icon}</span>
           <span class="job-name">${esc(j.name)}</span>
         </div>
-        <button type="button" class="btn-job-detail" data-job-detail="${j.id}">詳細</button>
+        <button type="button" class="btn-job-detail" data-job-detail="${j.id}">詳細・TOP3</button>
       </div>
       <div class="job-catchphrase">${esc(j.catchphrase)}</div>
     </div>`;
@@ -345,8 +364,10 @@ export function renderTitle(
   const curJob = getJobDef(selectedJob);
   const curDiff = getDifficultyDef(selectedDifficulty);
   return `<main class="title">
+    ${renderAccountTopBar()}
     <h1>雀闘<span class="kari">：改</span></h1>
     <p class="sub">牌を束ね、役とチェーンで${MAX_STAGE}連戦を勝ち抜け。</p>
+    ${renderResumeBanner()}
     <h2>1. 難易度を選択（現在：${esc(curDiff.name)}）</h2>
     <div class="diff-grid">${diffCards}</div>
     <h2>2. 職業を選択（現在：${curJob.icon}${esc(curJob.name)}）</h2>
@@ -369,7 +390,8 @@ export function renderTitle(
     <h2>3. ステージを選択して開始（${esc(curDiff.name)}）</h2>
     <div class="monsters">${cards}</div>
     ${showYakuModal ? renderYakuModal() : ''}
-    ${jobDetailId ? renderJobDetailModal(jobDetailId) : ''}
+    ${jobDetailId ? renderJobDetailModal(jobDetailId, acc) : ''}
+    ${renderAccountModals(acc)}
   </main>`;
 }
 
@@ -413,6 +435,25 @@ function renderBuffBadges(s: BattleState): string {
 function renderEnemyBuffBadges(s: BattleState): string {
   const eb = s.enemyBuffs;
   const badges: string[] = [];
+
+  const enrageLvl = getMonsterEnrageLevel(s.turn);
+  const enrageMult = getMonsterEnrageMult(s.turn);
+  const turnsUntil = getTurnsUntilNextEnrage(s.turn);
+
+  if (enrageLvl > 0) {
+    badges.push(
+      `<span class="badge debuff" title="5ターン経過ごとに敵の攻撃力が1.5倍（現在Lv.${enrageLvl}）">💢激昂×${enrageMult}(次まで${turnsUntil}T)</span>`,
+    );
+  } else if (turnsUntil <= 2) {
+    badges.push(
+      `<span class="badge enrage-warn" title="5ターン経過ごとに敵の攻撃力が1.5倍">⏳激昂まで${turnsUntil}T</span>`,
+    );
+  } else {
+    badges.push(
+      `<span class="badge neutral" title="5ターン経過ごとに敵の攻撃力が1.5倍">⏳激昂まで${turnsUntil}T</span>`,
+    );
+  }
+
   if (eb.charged) badges.push('<span class="badge debuff">ためる(次通常3倍)</span>');
   if (eb.defendTurns > 0) badges.push(`<span class="badge debuff">防御(${eb.defendTurns}T)</span>`);
   if (eb.reflectTurns > 0) badges.push(`<span class="badge debuff">反射(${eb.reflectTurns}T)</span>`);
@@ -822,6 +863,7 @@ export function renderBattle(v: BattleView): string {
           .join('');
 
   const diffDef = getDifficultyDef(s.difficulty);
+  const acc = ui.account ?? createInitialAccountUiState();
   const sc =
     !isModalBlockedByAnim && (s.status === 'won' || s.status === 'lost') ? calculateScore(s) : null;
   const result = sc
@@ -843,6 +885,7 @@ export function renderBattle(v: BattleView): string {
               <span>💰 総獲得銭: <b>${s.money.toLocaleString()} 銭</b></span>
             </div>
           </div>
+          ${renderClearVeteranSaveSection(s, sc, acc)}
           <div class="result-actions">
             <button data-action="retry">第1戦から再挑戦</button>
             <button data-action="title">タイトルへ戻る</button>
@@ -872,13 +915,21 @@ export function renderBattle(v: BattleView): string {
       ? ' enemy-darkout'
       : '';
 
+  const enrageLvl = getMonsterEnrageLevel(s.turn);
+  const enrageMult = getMonsterEnrageMult(s.turn);
+  const effectiveAtk = getMonsterEffectiveAtk(s.monster.def.atk, s.turn);
+  const atkHtml =
+    enrageLvl > 0
+      ? `<span class="matk" title="基礎攻撃力 ${s.monster.def.atk} × 激昂 ${enrageMult}倍">攻撃力 ${effectiveAtk} <span class="enrage-badge">💢×${enrageMult}</span></span>`
+      : `<span class="matk">基礎攻撃力 ${s.monster.def.atk}</span>`;
+
   return `<main class="battle${phaseCls}">
     <section class="enemy${monsterHit}${enemyDefeatCls}">
       <div class="enemy-head">
         <span class="stage-badge${s.difficulty === 'advanced' ? ' stage-badge-advanced' : ''}">${esc(diffDef.name)} STAGE ${s.stage} / ${MAX_STAGE}</span>
         <span class="rank">${esc(s.monster.def.rank)}</span>
         <span class="mname">${esc(s.monster.def.name)}</span>
-        <span class="matk">基礎攻撃力 ${s.monster.def.atk}</span>
+        ${atkHtml}
         ${phaseBanner}
         <div class="buff-row">${renderEnemyBuffBadges(s)}</div>
       </div>
@@ -925,6 +976,7 @@ export function renderBattle(v: BattleView): string {
         <div class="status-right">
           <button class="btn-wall btn-xs" data-action="open-wall">残り牌(${s.wall.length})</button>
           <button class="btn-yaku btn-xs" data-action="open-yaku">役一覧</button>
+          <button class="btn-clear btn-xs" data-action="suspend-to-title" title="現在の状況をオートセーブしてタイトルへ戻ります">🏠 中断</button>
         </div>
       </div>
       <div class="preview${preview.ev?.valid || preview.canConfirmRiichi ? ' ok' : ''}">
@@ -1052,7 +1104,8 @@ export function renderBattle(v: BattleView): string {
     ${ui.showWallModal ? renderWallModal(s, ui) : ''}
     ${ui.showYakuModal ? renderYakuModal(s) : ''}
     ${ui.showEquipModal ? renderEquipDetailModal(s) : ''}
-    ${ui.jobDetailId ? renderJobDetailModal(ui.jobDetailId) : ''}
+    ${ui.jobDetailId ? renderJobDetailModal(ui.jobDetailId, acc) : ''}
+    ${renderAccountModals(acc)}
   </main>`;
 }
 

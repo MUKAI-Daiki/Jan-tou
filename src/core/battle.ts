@@ -989,6 +989,50 @@ function applyMasterUraDora(s: BattleState): void {
   }
 }
 
+/**
+ * ターン数に応じた敵の激昂段階（5ターン経過するごとに+1段階）
+ * 1〜5T: 0
+ * 6〜10T: 1
+ * 11〜15T: 2
+ * 16〜20T: 3
+ * ...
+ */
+export function getMonsterEnrageLevel(turn: number): number {
+  return Math.max(0, Math.floor((Math.max(1, turn) - 1) / 5));
+}
+
+/**
+ * 敵の激昂倍率（5ターン経過するごとに1.5倍ずつ累乗）
+ * 段階0 (1〜5T): 1.0倍
+ * 段階1 (6〜10T): 1.5倍
+ * 段階2 (11〜15T): 2.25倍
+ * 段階3 (16〜20T): 3.38倍
+ */
+export function getMonsterEnrageMult(turn: number): number {
+  const level = getMonsterEnrageLevel(turn);
+  if (level === 0) return 1;
+  return Math.round(Math.pow(1.5, level) * 100) / 100;
+}
+
+/**
+ * 次の激昂段階までの残りターン数（1〜5）
+ * 例: 1T目 -> 残り5T (5T目終了後に激昂)
+ *     5T目 -> 残り1T (このターン終了後に激昂)
+ *     6T目 -> 残り5T (10T目終了後に次段階)
+ */
+export function getTurnsUntilNextEnrage(turn: number): number {
+  const safeTurn = Math.max(1, turn);
+  return 5 - ((safeTurn - 1) % 5);
+}
+
+/**
+ * 激昂倍率を適用した敵の現在攻撃力
+ */
+export function getMonsterEffectiveAtk(baseAtk: number, turn: number): number {
+  const mult = getMonsterEnrageMult(turn);
+  return Math.max(1, Math.round(baseAtk * mult));
+}
+
 function executeSingleMonsterAction(
   s: BattleState,
   rng: Rng,
@@ -997,6 +1041,8 @@ function executeSingleMonsterAction(
 ): void {
   if (s.status !== 'playing' || s.monster.hp <= 0) return;
   const def = s.monster.def;
+  const effectiveAtk = getMonsterEffectiveAtk(def.atk, s.turn);
+  const enrageMult = getMonsterEnrageMult(s.turn);
 
   // 忍びの雀士による「足止め（影縫い）」判定
   if ((s.enemyBuffs.stunTurns ?? 0) > 0) {
@@ -1038,6 +1084,7 @@ function executeSingleMonsterAction(
     }
     let dmg = Math.max(1, Math.round(rawDmg * chargeMult * dmgCutMult * riichiCutMult * weakenMult));
     const notes: string[] = [];
+    if (enrageMult > 1) notes.push(`💢×${enrageMult}`);
     if (s.riichi && s.job === 'master') notes.push('🧙×0.5');
     if ((s.enemyBuffs.weakenTurns ?? 0) > 0) notes.push('❄️-30%');
     if (s.buffs.guardBarrier > 0) {
@@ -1071,11 +1118,11 @@ function executeSingleMonsterAction(
       break;
     }
     case 'normal': {
-      dealDamageToPlayer(rollMonsterDamage(def.atk, rng), '通常攻撃');
+      dealDamageToPlayer(rollMonsterDamage(effectiveAtk, rng), '通常攻撃');
       break;
     }
     case 'critical': {
-      dealDamageToPlayer(rollMonsterDamage(def.atk, rng) * 2, 'クリティカル');
+      dealDamageToPlayer(rollMonsterDamage(effectiveAtk, rng) * 2, 'クリティカル');
       break;
     }
     case 'seal_yaku': {
@@ -1086,7 +1133,7 @@ function executeSingleMonsterAction(
     case 'atk_down': {
       s.buffs.atkDownTurns += 3;
       recordMonsterStep(s, steps, `${def.name}の「攻撃力ダウン」！`, '⬇️⚔️-10(3T)');
-      dealDamageToPlayer(Math.round(rollMonsterDamage(def.atk, rng) * 0.6), '追撃');
+      dealDamageToPlayer(Math.round(rollMonsterDamage(effectiveAtk, rng) * 0.6), '追撃');
       break;
     }
     case 'charge': {
@@ -1146,7 +1193,7 @@ function executeSingleMonsterAction(
         const eq = getEquipment(s.equipments[pick]);
         recordMonsterStep(s, steps, `${def.name}の「装備封印」！`, `🔒${eq.icon}${eq.kanji}`);
       } else {
-        dealDamageToPlayer(rollMonsterDamage(def.atk, rng), '通常攻撃');
+        dealDamageToPlayer(rollMonsterDamage(effectiveAtk, rng), '通常攻撃');
       }
       break;
     }
@@ -1217,7 +1264,7 @@ function executeSingleMonsterAction(
         const riichiBreakNote = forceCancelRiichiNoPenalty(s);
         recordMonsterStep(s, steps, `${def.name}の「カン破壊」！`, `💥カン破壊${riichiBreakNote}`);
       } else {
-        dealDamageToPlayer(rollMonsterDamage(def.atk, rng), 'カン破壊（不発→強撃）');
+        dealDamageToPlayer(rollMonsterDamage(effectiveAtk, rng), 'カン破壊（不発→強撃）');
       }
       break;
     }
@@ -1238,7 +1285,7 @@ function executeSingleMonsterAction(
     // ---- 新設：ボス固有の特殊行動 ----
     case 'titan_slam': {
       const declareText = `${def.name}の「巨体で突き飛ばす」！`;
-      const dmgText = applyMonsterDamage(rollMonsterDamage(def.atk, rng) * 2);
+      const dmgText = applyMonsterDamage(rollMonsterDamage(effectiveAtk, rng) * 2);
       if (checkMasterRiichiResist()) {
         recordMonsterStep(s, steps, declareText, `${dmgText} 🧙無効(30%)`);
         break;
@@ -1257,7 +1304,7 @@ function executeSingleMonsterAction(
     }
     case 'blizzard_breath': {
       const declareText = `${def.name}の「吹雪の息」！`;
-      const dmgText = applyMonsterDamage(Math.round(rollMonsterDamage(def.atk, rng) * 1.5));
+      const dmgText = applyMonsterDamage(Math.round(rollMonsterDamage(effectiveAtk, rng) * 1.5));
       if (checkMasterRiichiResist()) {
         recordMonsterStep(s, steps, declareText, `${dmgText} 🧙無効(30%)`);
         break;
@@ -1276,7 +1323,7 @@ function executeSingleMonsterAction(
     }
     case 'hellfire_breath': {
       const declareText = `${def.name}の「業火の息」！`;
-      const dmgText = applyMonsterDamage(Math.round(rollMonsterDamage(def.atk, rng) * 1.5));
+      const dmgText = applyMonsterDamage(Math.round(rollMonsterDamage(effectiveAtk, rng) * 1.5));
       for (const t of [...s.hand, ...s.melds.flatMap((m) => m.tiles)]) {
         s.tileMods[t] = 'normal';
       }
@@ -1285,7 +1332,7 @@ function executeSingleMonsterAction(
     }
     case 'cataclysm': {
       const declareText = `${def.name}の「天災」！`;
-      const dmgText = applyMonsterDamage(Math.round(rollMonsterDamage(def.atk, rng) * 2.5));
+      const dmgText = applyMonsterDamage(Math.round(rollMonsterDamage(effectiveAtk, rng) * 2.5));
       if (checkMasterRiichiResist()) {
         recordMonsterStep(s, steps, declareText, `${dmgText} 🧙無効(30%)`);
         break;
@@ -1360,7 +1407,23 @@ function endPlayerTurnAndAdvance(s: BattleState, rng: Rng, steps: MonsterTurnSte
   }
 
   // 次ターン開始（鈍化中は装備によるチェーンプラスも封じる）
+  const prevEnrageLevel = getMonsterEnrageLevel(s.turn);
   s.turn++;
+  const nextEnrageLevel = getMonsterEnrageLevel(s.turn);
+  if (nextEnrageLevel > prevEnrageLevel) {
+    const mult = getMonsterEnrageMult(s.turn);
+    const effAtk = getMonsterEffectiveAtk(s.monster.def.atk, s.turn);
+    s.log.push({
+      side: 'monster',
+      text: `💢 【${s.monster.def.name}】が激昂した！ 攻撃力×${mult}倍に上昇！（攻撃力 ${effAtk}）`,
+    });
+    s.events.push({
+      type: 'buff',
+      target: 'monster',
+      amount: effAtk,
+      label: `💢激昂×${mult}`,
+    });
+  }
   s.chain = 0;
   s.riichiSwapsThisTurn = 0;
   s.extraChains = s.buffs.slowTurns > 0 ? 0 : countActiveEquip(s, 'always_chain_1');

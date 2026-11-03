@@ -66,6 +66,8 @@ export interface AttackEval {
   baseAttack: number;
   /** セット数による最終ダメージ倍率（0セット=1、1セット=1.5、2セット=2、3セット=3） */
   setCountMult: number;
+  /** 役による合計ダメージ倍率（加算方式：単体役倍率維持、複合時は増加分を加算） */
+  yakuMult: number;
   /** 職業効果によるダメージ倍率（雀剣士2倍、忍びの雀士2.5倍など） */
   jobDmgMult: number;
   /** 職業効果による追加チェーン数（忍びの雀士+1） */
@@ -345,8 +347,12 @@ export function evaluateDecomposition(
   }
   const usedRainbowCount = rainbowCount;
 
-  // ダメージ倍率計算（レベル制廃止に伴い levelMult は廃止）
-  const yakuMult = yaku.reduce((acc, y) => acc * y.dmgMult, 1);
+  // ダメージ倍率計算（複合役の極端な乗算インフレを防ぐため、加算方式を採用）
+  // 単体役（y.dmgMult）の倍率はそのまま、複数役成立時は増加分 (y.dmgMult - 1) をベース1.0に加算
+  const yakuMult =
+    yaku.length === 0
+      ? 1
+      : Math.round((1 + yaku.reduce((acc, y) => acc + Math.max(0, y.dmgMult - 1), 0)) * 100) / 100;
   const sanankouMult = (ctx.sanankouTurns ?? 0) > 0 ? 3 : 1;
   const chain = ctx.chain ?? 0;
   const chainExtraMult = chain > 0 ? (ctx.nextChainMult ?? 1) : 1;
@@ -404,6 +410,7 @@ export function evaluateDecomposition(
     setBonus,
     baseAttack,
     setCountMult,
+    yakuMult,
     jobDmgMult,
     jobBonusChains,
     basicShuntsuHealRate,

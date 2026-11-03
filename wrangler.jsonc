@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "jantou",
+  "main": "src/server/index.ts",
+  "compatibility_date": "2026-10-31",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "routes": [
+    {
+      "pattern": "jan-toh.ritan-lab.jp",
+      "custom_domain": true
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "jantou-db",
+      "database_id": "91d24931-c3e5-492f-8802-44463dccc39c",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
+
